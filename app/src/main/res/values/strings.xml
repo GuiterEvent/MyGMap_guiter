@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MyGMap 我的地圖編輯器</string>
+    <string name="exit_dialog_title">離開 MyGMap</string>
+    <string name="exit_dialog_message">確定要關閉「我的地圖行動編輯器」嗎？您的變更已自動同步至雲端。</string>
+    <string name="confirm">確定離開</string>
+    <string name="cancel">取消</string>
+    <string name="open_in_gmaps_title">🗺️ 在 Google Maps App 開啟</string>
+    <string name="export_kml_started">📥 已開始下載 KML/KMZ 檔案至系統「下載 (Downloads)」資料夾</string>
+    <string name="offline_banner_title">📴 目前處於離線狀態（無網路連線）</string>
+    <string name="offline_banner_message">Google 我的地圖需要網路連線以同步雲端圖資。請檢查網路設定後點擊重試。</string>
+</resources>
+

@@ -1,0 +1,250 @@
+/* ============================================================================
+ * MyGMap Mobile Responsive & Drawer Stylesheet (inject_style.css)
+ *
+ * 設計規範：
+ * 1. 逃生門機制 (CSS Bypass)：所有行動版重構樣式嚴格限定於 `body.mygmap-mobile-mode` 下。
+ *    當移除 `mygmap-mobile-mode` class 時，網頁立即 100% 恢復原始桌面版排版（避免共用/匯入 KML 彈窗跑版）。
+ * 2. 左側圖層面板抽屜化：透過 `body.mygmap-drawer-closed` 與 `body.mygmap-drawer-open` 控制滑出抽屜。
+ * 3. 觸控熱區放大：搜尋框、新增至地圖、頂部編輯工具列按鈕放大至 44px~48px 以上。
+ * ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+ * 1. 全域觸控與地圖畫布滿版化 (僅限 body.mygmap-mobile-mode)
+ * ---------------------------------------------------------------------------- */
+body.mygmap-mobile-mode {
+    overscroll-behavior: none !important;
+    -webkit-tap-highlight-color: rgba(26, 115, 232, 0.18);
+    touch-action: manipulation;
+}
+
+/* 讓地圖主畫布在左側面板收合時佔滿 100% 螢幕寬度，並強化多點觸控與拖曳手勢隔離 */
+body.mygmap-mobile-mode #map-canvas,
+body.mygmap-mobile-mode #lyra-canvas,
+body.mygmap-mobile-mode [data-mygmap-role="map-canvas"] {
+    left: 0 !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    touch-action: none !important;
+    overscroll-behavior: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+
+/* ----------------------------------------------------------------------------
+ * 2. 左側圖層面板抽屜化 (#featurelist-pane / [data-mygmap-role="layer-panel"])
+ * ---------------------------------------------------------------------------- */
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"],
+body.mygmap-mobile-mode #featurelist-pane:not([data-mygmap-role="layer-panel"] *) {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    width: 85vw !important;
+    max-width: 340px !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    margin: 0 !important;
+    z-index: 9990 !important;
+    background-color: #ffffff !important;
+    box-shadow: 4px 0 24px rgba(15, 23, 42, 0.32) !important;
+    border-radius: 0 14px 14px 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    overscroll-behavior: contain !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-y !important;
+    transition: transform 0.26s cubic-bezier(0.4, 0.0, 0.2, 1),
+                visibility 0.26s ease !important;
+    will-change: transform;
+}
+
+/* 當 #featurelist-pane 位於被標記的 layer-panel 容器內部時，讓其自適應抽屜寬高 */
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] #featurelist-pane {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100% !important;
+    position: relative !important;
+    left: 0 !important;
+    top: 0 !important;
+    overscroll-behavior: contain !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-y !important;
+}
+
+/* 抽屜收合狀態 (預設)：滑出左側畫面外 (-105%) 並隱藏事件，釋放 100% 地圖視野且絕不攔截左側邊緣手勢 */
+body.mygmap-mobile-mode.mygmap-drawer-closed [data-mygmap-role="layer-panel"],
+body.mygmap-mobile-mode.mygmap-drawer-closed #featurelist-pane:not([data-mygmap-role="layer-panel"] *),
+body.mygmap-mobile-mode:not(.mygmap-drawer-open) [data-mygmap-role="layer-panel"],
+body.mygmap-mobile-mode:not(.mygmap-drawer-open) #featurelist-pane:not([data-mygmap-role="layer-panel"] *) {
+    transform: translateX(-105%) !important;
+    pointer-events: none !important;
+    visibility: hidden !important;
+}
+
+/* 抽屜展開狀態：平滑滑入畫面左側 */
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"],
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane:not([data-mygmap-role="layer-panel"] *) {
+    transform: translateX(0) !important;
+    pointer-events: auto !important;
+    visibility: visible !important;
+}
+
+/* 抽屜展開時的背景半透明遮罩 (點擊或左滑可關閉抽屜，並阻擋底層地圖誤觸) */
+#mygmap-drawer-backdrop {
+    display: none;
+}
+
+body.mygmap-mobile-mode #mygmap-drawer-backdrop {
+    display: block;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    background: rgba(15, 23, 42, 0.45) !important;
+    z-index: 9985 !important;
+    opacity: 0;
+    pointer-events: none;
+    touch-action: none !important;
+    transition: opacity 0.24s ease !important;
+}
+
+body.mygmap-mobile-mode.mygmap-drawer-open #mygmap-drawer-backdrop {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+}
+
+/* ----------------------------------------------------------------------------
+ * 3. 放大觸控熱區 (44px ~ 48px 行動裝置人體工學尺寸)
+ * ---------------------------------------------------------------------------- */
+
+/* 3.1 頂部搜尋列與搜尋輸入框 */
+body.mygmap-mobile-mode [data-mygmap-role="search-container"] {
+    left: 8px !important;
+    right: 8px !important;
+    max-width: calc(100vw - 16px) !important;
+    z-index: 9000 !important;
+}
+
+body.mygmap-mobile-mode #mapsprosearch-field,
+body.mygmap-mobile-mode [data-mygmap-role="search-input"] {
+    min-height: 46px !important;
+    height: 46px !important;
+    font-size: 16px !important;
+    line-height: 24px !important;
+    padding: 8px 12px !important;
+    box-sizing: border-box !important;
+    border-radius: 8px 0 0 8px !important;
+}
+
+/* 搜尋按鈕 */
+body.mygmap-mobile-mode #mapsprosearch-button,
+body.mygmap-mobile-mode [data-mygmap-role="search-button"] {
+    min-width: 48px !important;
+    min-height: 46px !important;
+    height: 46px !important;
+    padding: 0 12px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    cursor: pointer !important;
+}
+
+/* 3.2 「新增至地圖 (#addtomap-button)」按鈕放大與醒目化 */
+body.mygmap-mobile-mode #addtomap-button,
+body.mygmap-mobile-mode [data-mygmap-role="add-to-map-button"] {
+    min-height: 46px !important;
+    min-width: 48px !important;
+    padding: 10px 18px !important;
+    margin-top: 6px !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    color: #ffffff !important;
+    background-color: #1a73e8 !important;
+    border-radius: 8px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: 0 2px 6px rgba(26, 115, 232, 0.35) !important;
+    box-sizing: border-box !important;
+}
+
+/* 3.3 頂部編輯工具列按鈕 (選取項目、新增標記、繪製線條、路線、測量等) */
+body.mygmap-mobile-mode [data-mygmap-role="editor-toolbar"] {
+    left: 8px !important;
+    max-width: calc(100vw - 16px) !important;
+    overflow-x: auto !important;
+    white-space: nowrap !important;
+    z-index: 8990 !important;
+}
+
+body.mygmap-mobile-mode [data-mygmap-role^="tool-"],
+body.mygmap-mobile-mode [data-mygmap-role="toolbar-button"],
+body.mygmap-mobile-mode .goog-toolbar-button,
+body.mygmap-mobile-mode .goog-toolbar-menu-button {
+    min-width: 46px !important;
+    min-height: 46px !important;
+    padding: 8px 10px !important;
+    margin: 2px 3px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+    border-radius: 6px !important;
+}
+
+/* 3.4 圖層面板內的按鈕與勾選框熱區放大 */
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] [role="button"],
+body.mygmap-mobile-mode #featurelist-pane [role="button"] {
+    min-height: 44px !important;
+    min-width: 44px !important;
+    padding: 6px 8px !important;
+    box-sizing: border-box !important;
+}
+
+/* 3.5 圖釘資訊氣泡窗 (InfoWindow) 行動版輸入框與儲存/編輯按鈕熱區優化 */
+body.mygmap-mobile-mode #map-infowindow-container {
+    max-width: calc(100vw - 24px) !important;
+    box-sizing: border-box !important;
+}
+
+body.mygmap-mobile-mode [id^="map-infowindow-attr-"][id$="-value"],
+body.mygmap-mobile-mode #map-infowindow-container input[type="text"],
+body.mygmap-mobile-mode #map-infowindow-container textarea,
+body.mygmap-mobile-mode #map-infowindow-container [contenteditable="true"] {
+    min-height: 38px !important;
+    font-size: 15px !important;
+    line-height: 1.4 !important;
+    padding: 6px 8px !important;
+    box-sizing: border-box !important;
+}
+
+body.mygmap-mobile-mode #map-infowindow-done-editing-button,
+body.mygmap-mobile-mode #map-infowindow-edit-button,
+body.mygmap-mobile-mode #map-infowindow-delete-button,
+body.mygmap-mobile-mode #map-infowindow-cancel-editing-button {
+    min-height: 42px !important;
+    min-width: 44px !important;
+    padding: 6px 12px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+}
+
+/* ----------------------------------------------------------------------------
+ * 4. 開發者 DOM 探測模式 (Inspect Mode) 高亮視覺回饋
+ * ---------------------------------------------------------------------------- */
+body.mygmap-inspect-mode * {
+    cursor: crosshair !important;
+}
+
+[data-mygmap-inspected="true"] {
+    outline: 3px solid #ef4444 !important;
+    outline-offset: 2px !important;
+    background-color: rgba(239, 68, 68, 0.14) !important;
+    transition: outline 0.15s ease, background-color 0.15s ease !important;
+}
