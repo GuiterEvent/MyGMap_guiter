@@ -288,6 +288,360 @@ object MapExportAndIntentHelper {
     }
 
     // ========================================================================
+    // 1.5 Phase 11：外部 Google Maps URL 辨識、目的地解析與直接喚起導航
+    // ========================================================================
+
+    private fun extractUrlScheme(url: String): String {
+        val colonIdx = url.indexOf(':')
+        if (colonIdx <= 0) return ""
+        val candidate = url.substring(0, colonIdx).trim()
+        return if (Regex("^[a-zA-Z][a-zA-Z0-9+.-]*$").matches(candidate)) {
+            candidate.lowercase(Locale.ROOT)
+        } else {
+            ""
+        }
+    }
+
+    private fun parseUrlHostAndPath(url: String): Pair<String, String>? {
+        val trimmed = url.trim()
+        try {
+            val uri = java.net.URI(trimmed)
+            val host = uri.host?.lowercase(Locale.ROOT)
+            if (!host.isNullOrBlank()) {
+                return host to (uri.rawPath ?: "")
+            }
+        } catch (_: Exception) {
+        }
+        val match = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#:]+)(?::\\d+)?([^?#]*)").find(trimmed)
+            ?: return null
+        return match.groupValues[1].lowercase(Locale.ROOT) to match.groupValues[2]
+    }
+
+    private fun isLocalizedGoogleDomain(host: String): Boolean {
+        return Regex("^(?:www\\.)?google\\.(?:com|[a-z]{2,3}|com\\.[a-z]{2}|co\\.[a-z]{2})$")
+            .matches(host)
+    }
+
+    private fun isLocalizedMapsGoogleDomain(host: String): Boolean {
+        return Regex("^maps\\.google\\.(?:com|[a-z]{2,3}|com\\.[a-z]{2}|co\\.[a-z]{2})$")
+            .matches(host)
+    }
+
+    /**
+     * Phase 11：判斷網址是否為外部 Google Maps 導航 / 地點 / 短網址連結（排除 Google 我的地圖本身與登入頁面）。
+     * 純字串與 `java.net.URI` 解析，可於 Android Runtime 與純 JVM 單元測試環境正常運作。
+     */
+    fun isExternalGoogleMapsUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val trimmed = url.trim()
+        val scheme = extractUrlScheme(trimmed)
+
+        if (scheme == "google.navigation" || scheme == "geo" || scheme == "google.streetview") {
+            return true
+        }
+        if (scheme != "http" && scheme != "https") {
+            return false
+        }
+
+        // 明確排除 Google 我的地圖本身與 Google 帳號 OAuth 登入網址
+        if (MyMapWebViewClient.isMyMapsUrl(trimmed) || MyMapWebViewClient.isGoogleAuthUrl(trimmed)) {
+            return false
+        }
+
+        val (host, rawPath) = parseUrlHostAndPath(trimmed) ?: return false
+        val path = rawPath.lowercase(Locale.ROOT)
+
+        if (host.startsWith("accounts.google.")) {
+            return false
+        }
+        if (path == "/maps/d" || path.startsWith("/maps/d/")) {
+            return false
+        }
+
+        if (host == "maps.app.goo.gl") {
+            return true
+        }
+        if (host == "goo.gl" && path.startsWith("/maps")) {
+            return true
+        }
+        if (isLocalizedMapsGoogleDomain(host)) {
+            return true
+        }
+        if (isLocalizedGoogleDomain(host)) {
+            return path == "/maps" ||
+                path == "/maps/" ||
+                path.startsWith("/maps/dir") ||
+                path.startsWith("/maps/place") ||
+                path.startsWith("/maps/search") ||
+                path.startsWith("/maps/@")
+        }
+
+        return false
+    }
+
+    /**
+     * Phase 11：從 Google Maps 導航 / 地點網址提取目的地字串或 `"lat,lng"` 座標。
+     * 支援：`destination=`、`daddr=`、`/maps/dir/.../<dest>`、`query=`、`q=` 與 `extractLatLngFromUrl(url)`。
+     */
+    fun extractDirectionsDestinationFromUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val trimmed = url.trim()
+
+        // 1. 優先檢查明確導航參數 destination= / daddr=
+        for (param in listOf("destination", "daddr")) {
+            extractRawQueryParam(trimmed, param)?.let { decoded ->
+                val clean = decoded.trim()
+                if (clean.isNotEmpty() && !isCurrentLocationPlaceholder(clean)) {
+                    return clean
+                }
+            }
+        }
+
+        // 2. 檢查路徑 /maps/dir/<origin>/<dest>/... 格式
+        val (_, rawPath) = parseUrlHostAndPath(trimmed) ?: ("" to "")
+        val dirIndex = rawPath.lowercase(Locale.ROOT).indexOf("/maps/dir/")
+        if (dirIndex >= 0) {
+            val afterDir = rawPath.substring(dirIndex + "/maps/dir/".length)
+            val segments = afterDir.split("/")
+            var candidateSegment: String? = null
+            for (seg in segments) {
+                if (seg.isEmpty()) continue
+                val lowerSeg = seg.lowercase(Locale.ROOT)
+                if (lowerSeg.startsWith("@") ||
+                    lowerSeg.startsWith("data=") ||
+                    lowerSeg.startsWith("am=") ||
+                    lowerSeg.startsWith("entry=")
+                ) {
+                    break
+                }
+                val decodedSeg = try {
+                    URLDecoder.decode(seg, "UTF-8").trim()
+                } catch (_: Exception) {
+                    seg.trim()
+                }
+                if (decodedSeg.isNotEmpty()) {
+                    candidateSegment = decodedSeg
+                }
+            }
+            if (!candidateSegment.isNullOrBlank() && !isCurrentLocationPlaceholder(candidateSegment)) {
+                val coords = extractLatLngFromText(candidateSegment)
+                return if (coords != null && candidateSegment.matches(Regex("^-?\\d{1,2}\\.\\d+\\s*,\\s*-?\\d{1,3}\\.\\d+$"))) {
+                    String.format(Locale.US, "%.6f,%.6f", coords.latitude, coords.longitude)
+                } else {
+                    candidateSegment
+                }
+            }
+        }
+
+        // 3. 檢查 query= / q=（包含 google.navigation:q=...）
+        for (param in listOf("query", "q")) {
+            extractRawQueryParam(trimmed, param)?.let { decoded ->
+                val clean = decoded.trim()
+                if (clean.isNotEmpty() && !isCurrentLocationPlaceholder(clean)) {
+                    return clean
+                }
+            }
+        }
+
+        // 4. 退回從網址中的 ll / sll / @lat,lng 解析座標
+        extractLatLngFromUrl(trimmed)?.let { coords ->
+            return String.format(Locale.US, "%.6f,%.6f", coords.latitude, coords.longitude)
+        }
+
+        return null
+    }
+
+    private fun extractRawQueryParam(url: String, paramName: String): String? {
+        val regex = Regex("(?:[?&:])${Regex.escape(paramName)}=([^&#\\s]+)", RegexOption.IGNORE_CASE)
+        val rawValue = regex.find(url)?.groupValues?.getOrNull(1) ?: return null
+        return try {
+            URLDecoder.decode(rawValue, "UTF-8")
+        } catch (_: Exception) {
+            rawValue
+        }
+    }
+
+    private fun isCurrentLocationPlaceholder(value: String): Boolean {
+        val lower = value.trim().lowercase(Locale.ROOT)
+        return lower == "current location" ||
+            lower == "my location" ||
+            lower == "your location" ||
+            lower == "目前位置" ||
+            lower == "我的位置"
+    }
+
+    private fun isDirectionsStyleUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.ROOT)
+        return lower.contains("/maps/dir") ||
+            lower.contains("daddr=") ||
+            lower.contains("destination=") ||
+            lower.contains("f=d")
+    }
+
+    /**
+     * Phase 11：將攔截到的外部 Google Maps 導航 / 地點 / 短網址或特殊協定 (`geo:`, `google.navigation:`, `intent://`)
+     * 直接喚起手機內的官方 Google Maps App (`com.google.android.apps.maps`)；若未安裝則降級為一般外部開啟。
+     */
+    fun openExternalMapsUrlInGoogleMapsApp(
+        context: Context,
+        rawUrl: String,
+        navContext: MapNavigationContext? = null
+    ): Boolean {
+        val trimmedUrl = rawUrl.trim()
+        if (trimmedUrl.isEmpty()) return false
+        val scheme = extractUrlScheme(trimmedUrl)
+
+        // 1. intent:// 協定：使用 Intent.parseUri 解析，必要時嘗試 browser_fallback_url
+        if (scheme == "intent") {
+            var parsedIntent: Intent? = null
+            try {
+                parsedIntent = Intent.parseUri(trimmedUrl, Intent.URI_INTENT_SCHEME).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(parsedIntent)
+                Toast.makeText(context, "🧭 已喚起外部地圖應用程式", Toast.LENGTH_SHORT).show()
+                Log.i(TAG, "Opened intent URI: $trimmedUrl")
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start parsed intent URI ($trimmedUrl): ${e.message}")
+                val fallbackUrl = parsedIntent?.getStringExtra("browser_fallback_url")?.trim()
+                if (!fallbackUrl.isNullOrEmpty() && !fallbackUrl.equals(trimmedUrl, ignoreCase = true)) {
+                    if (isExternalGoogleMapsUrl(fallbackUrl)) {
+                        return openExternalMapsUrlInGoogleMapsApp(context, fallbackUrl, navContext)
+                    }
+                    return try {
+                        val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(fallbackIntent)
+                        true
+                    } catch (fallbackErr: Exception) {
+                        Log.e(TAG, "Fallback URL open failed: ${fallbackErr.message}", fallbackErr)
+                        false
+                    }
+                }
+                return false
+            }
+        }
+
+        // 2. geo: / google.navigation: / google.streetview: 原生協定
+        if (scheme == "geo" || scheme == "google.navigation" || scheme == "google.streetview") {
+            try {
+                val mapsIntent = Intent(Intent.ACTION_VIEW, Uri.parse(trimmedUrl)).apply {
+                    setPackage(GOOGLE_MAPS_PACKAGE)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(mapsIntent)
+                val msg = if (scheme == "google.navigation") {
+                    "🧭 已喚起 Google Maps App 進行路線導航"
+                } else {
+                    "🗺️ 已在 Google Maps App 開啟"
+                }
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                Log.i(TAG, "Launched Google Maps App with native scheme: $trimmedUrl")
+                return true
+            } catch (_: ActivityNotFoundException) {
+                Log.w(TAG, "Google Maps package not found for $trimmedUrl, trying generic VIEW")
+            } catch (e: Exception) {
+                Log.w(TAG, "Direct package launch failed for $trimmedUrl: ${e.message}")
+            }
+
+            try {
+                val genericIntent = Intent(Intent.ACTION_VIEW, Uri.parse(trimmedUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(genericIntent)
+                return true
+            } catch (_: Exception) {
+                // 若裝置連一般 geo/navigation handler 都沒有，轉成 HTTPS 網頁導航網址
+                val dest = extractDirectionsDestinationFromUrl(trimmedUrl)
+                if (!dest.isNullOrBlank()) {
+                    val webUrl = "https://www.google.com/maps/dir/?api=1&destination=${urlEncode(dest)}&travelmode=driving"
+                    return try {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(webUrl)).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                        )
+                        true
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+                return false
+            }
+        }
+
+        // 3. HTTPS Google Maps 導航 / 地點 / 短網址
+        val isDirLink = isDirectionsStyleUrl(trimmedUrl)
+        val targetUriString = if (isDirLink) {
+            val destFromUrl = extractDirectionsDestinationFromUrl(trimmedUrl)
+            val fallbackCoords = navContext?.resolveBestCoordinates()
+            val fallbackTitle = navContext?.resolveBestQueryOrTitle().orEmpty()
+            val resolvedDestination = when {
+                !destFromUrl.isNullOrBlank() -> destFromUrl
+                fallbackCoords != null -> String.format(
+                    Locale.US,
+                    "%.6f,%.6f",
+                    fallbackCoords.latitude,
+                    fallbackCoords.longitude
+                )
+                fallbackTitle.isNotBlank() -> fallbackTitle
+                else -> null
+            }
+            if (!resolvedDestination.isNullOrBlank()) {
+                "google.navigation:q=${urlEncode(resolvedDestination)}"
+            } else {
+                trimmedUrl
+            }
+        } else {
+            trimmedUrl
+        }
+
+        try {
+            val mapsIntent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUriString)).apply {
+                setPackage(GOOGLE_MAPS_PACKAGE)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(mapsIntent)
+            val toastMsg = if (isDirLink || targetUriString.startsWith("google.navigation:")) {
+                "🧭 已喚起 Google Maps App 進行路線導航"
+            } else {
+                "🗺️ 已在 Google Maps App 開啟"
+            }
+            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+            Log.i(TAG, "Opened external Google Maps URL in app: $targetUriString (from $trimmedUrl)")
+            return true
+        } catch (_: ActivityNotFoundException) {
+            Log.w(TAG, "Google Maps App unavailable, falling back to browser for: $trimmedUrl")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to open $targetUriString in Google Maps App: ${e.message}")
+        }
+
+        // 4. 降級使用不指定套件的一般 ACTION_VIEW 開啟原始 HTTPS 網址
+        return try {
+            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(trimmedUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(browserIntent)
+            Toast.makeText(
+                context,
+                "🌐 未偵測到 Google Maps App，已透過外部瀏覽器開啟",
+                Toast.LENGTH_SHORT
+            ).show()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open fallback URL $trimmedUrl: ${e.message}", e)
+            Toast.makeText(
+                context,
+                "⚠️ 無法開啟外部地圖應用程式：${e.localizedMessage ?: "未知錯誤"}",
+                Toast.LENGTH_SHORT
+            ).show()
+            false
+        }
+    }
+
+    // ========================================================================
     // 2. 官方 Google Maps App 導航 / 街景 / 地圖檢視 URI 建構與 Intent 跳轉
     // ========================================================================
 

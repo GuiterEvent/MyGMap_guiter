@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Streetview
@@ -104,6 +105,7 @@ fun BottomActionBar(
     onRedo: () -> Unit,
     onOpenInGoogleMaps: () -> Unit = {},
     onExportKmlKmz: () -> Unit = {},
+    onResetGoogleLogin: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showModeMenu by remember { mutableStateOf(false) }
@@ -377,6 +379,39 @@ fun BottomActionBar(
                         onClick = {
                             showModeMenu = false
                             onExportKmlKmz()
+                        }
+                    )
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    // 選單項目 8 (Phase 9)：「🔄 清除登入快取並重試」— 頂部橫幅僅在登入遭拒時顯示，此處提供隨時可用的手動入口
+                    DropdownMenuItem(
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = Color(0xFFB45309)
+                            )
+                        },
+                        text = {
+                            Column {
+                                Text(
+                                    text = "🔄 清除登入快取並重試",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 14.sp,
+                                    color = Color(0xFFB45309)
+                                )
+                                Text(
+                                    text = "清除 Google 登入 Cookie、切換相容模式並重新開啟登入頁",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        onClick = {
+                            showModeMenu = false
+                            onResetGoogleLogin()
                         }
                     )
                 }

@@ -139,4 +139,69 @@ class MapExportAndIntentHelperTest {
         assertTrue(MapExportAndIntentHelper.isKmlFormat("https://www.google.com/maps/d/kml?mid=1&forcekml=1", null, null))
         assertFalse(MapExportAndIntentHelper.isKmlFormat("https://www.google.com/maps/d/kml?mid=1", null, MapExportAndIntentHelper.MIME_TYPE_KMZ))
     }
+
+    @Test
+    fun `isExternalGoogleMapsUrl matches external Google Maps URLs and excludes My Maps and OAuth`() {
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com/maps/dir/?api=1&destination=25.033964,121.564468"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com/maps/dir//25.033964,121.564468"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://maps.google.com/maps?daddr=25.033964,121.564468"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://maps.google.com.tw/maps?q=Taipei+101"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com.tw/maps/place/Taipei+101/@25.033964,121.564468,17z"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com/maps/search/?api=1&query=25.033964,121.564468"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com/maps/@25.033964,121.564468,15z"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://maps.app.goo.gl/AbCdEf123"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://goo.gl/maps/XyZ789"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("google.navigation:q=25.033964,121.564468"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("geo:25.033964,121.564468?q=25.033964,121.564468"))
+        assertTrue(MapExportAndIntentHelper.isExternalGoogleMapsUrl("google.streetview:cbll=25.033964,121.564468"))
+
+        assertFalse(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com/maps/d/edit?mid=123"))
+        assertFalse(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com/maps/d/viewer?mid=123"))
+        assertFalse(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com/maps/d/"))
+        assertFalse(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://www.google.com.tw/maps/d/edit?mid=123"))
+        assertFalse(MapExportAndIntentHelper.isExternalGoogleMapsUrl("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.google.com%2Fmaps%2Fd%2F"))
+        assertFalse(MapExportAndIntentHelper.isExternalGoogleMapsUrl("about:blank"))
+        assertFalse(MapExportAndIntentHelper.isExternalGoogleMapsUrl(null))
+    }
+
+    @Test
+    fun `extractDirectionsDestinationFromUrl parses destination, daddr, dir path and query`() {
+        assertEquals(
+            "25.033964,121.564468",
+            MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(
+                "https://www.google.com/maps/dir/?api=1&destination=25.033964%2C121.564468&travelmode=driving"
+            )
+        )
+        assertEquals(
+            "Taipei 101",
+            MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(
+                "https://maps.google.com/maps?saddr=My+Location&daddr=Taipei+101"
+            )
+        )
+        assertEquals(
+            "25.033964,121.564468",
+            MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(
+                "https://www.google.com/maps/dir//25.033964,121.564468"
+            )
+        )
+        assertEquals(
+            "25.033964,121.564468",
+            MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(
+                "https://www.google.com/maps/dir/Current+Location/25.033964,121.564468/@25.03,121.56,15z"
+            )
+        )
+        assertEquals(
+            "25.033964,121.564468",
+            MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(
+                "https://www.google.com/maps/search/?api=1&query=25.033964,121.564468"
+            )
+        )
+        assertEquals(
+            "25.033964,121.564468",
+            MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(
+                "https://www.google.com/maps/@25.033964,121.564468,15z"
+            )
+        )
+        assertNull(MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(null))
+    }
 }

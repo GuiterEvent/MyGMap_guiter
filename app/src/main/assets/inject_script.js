@@ -186,25 +186,124 @@
     }
 
     /**
+     * Phase 10 地圖畫布保護機制：
+     * 判斷節點是否為文件根節點、地圖畫布本身，或其內部包含地圖畫布 / 搜尋框 / 工具列。
+     * 凡回傳 true 者代表這是地圖畫布或共用版面根容器，絕對禁止被標記為 layer-panel。
+     */
+    function containsMapOrEditorRoot(el) {
+        if (!el || el === document.body || el === document.documentElement) {
+            return true;
+        }
+        if (el.nodeType !== 1) {
+            return true;
+        }
+        var protectedSelector =
+            '#map-canvas, #lyra-canvas, #map-container, .gm-style, canvas, ' +
+            '#mapsprosearch-field, [role="toolbar"], [data-mygmap-role="map-canvas"]';
+        try {
+            if (typeof el.matches === 'function' && el.matches(protectedSelector)) {
+                return true;
+            }
+            if (typeof el.querySelector === 'function' && el.querySelector(protectedSelector)) {
+                return true;
+            }
+        } catch (_e) {
+            // 忽略選擇器例外
+        }
+        return false;
+    }
+
+    /**
+     * 定位地圖主畫布元素：優先 #map-canvas / #lyra-canvas，次之為不包含 #featurelist-pane 的 .gm-style 外層地圖容器
+     */
+    function findMapCanvasElement() {
+        var directCanvas = document.getElementById('map-canvas') || document.getElementById('lyra-canvas');
+        if (directCanvas) {
+            return directCanvas;
+        }
+        var mapContainer = document.getElementById('map-container');
+        if (mapContainer && !(mapContainer.querySelector && mapContainer.querySelector('#featurelist-pane'))) {
+            return mapContainer;
+        }
+        var gmStyle = document.querySelector('.gm-style');
+        if (gmStyle) {
+            var best = gmStyle;
+            var candidate = gmStyle.parentElement;
+            var depth = 0;
+            while (candidate && candidate !== document.body && candidate !== document.documentElement && depth < 3) {
+                if (candidate.querySelector && (
+                    candidate.querySelector('#featurelist-pane') ||
+                    candidate.querySelector('#mapsprosearch-field') ||
+                    candidate.querySelector('[role="toolbar"]')
+                )) {
+                    break;
+                }
+                best = candidate;
+                candidate = candidate.parentElement;
+                depth++;
+            }
+            return best;
+        }
+        return null;
+    }
+
+    /**
      * 啟發式結構搜尋：尋找畫面左側固定寬度的圖層面板容器
-     * 若 #featurelist-pane 存在，優先檢查其是否有包裹標題與清單的左側固定外框容器；
-     * 若無固定 ID，則掃描畫面左側寬度介於 200px~450px、高度佔視窗 40% 以上的容器。
+     * 嚴格禁止攀爬至任何 containsMapOrEditorRoot(el) === true 的地圖共用外層容器。
      */
     function findLayerPanelByHeuristic() {
         var existingTagged = document.querySelector('[data-mygmap-role="layer-panel"]');
-        if (existingTagged && isElementUsable(existingTagged)) {
-            return existingTagged;
+        if (existingTagged) {
+            if (isElementUsable(existingTagged) && !containsMapOrEditorRoot(existingTagged)) {
+                return existingTagged;
+            }
+            existingTagged.removeAttribute('data-mygmap-role');
         }
+
+        var viewportHeight = window.innerHeight || 600;
+        var viewportWidth = window.innerWidth || 360;
 
         var featurePane = document.getElementById('featurelist-pane');
         if (featurePane) {
+            if (containsMapOrEditorRoot(featurePane)) {
+                return null;
+            }
             var current = featurePane;
             var bestPanel = featurePane;
             var depth = 0;
-            while (current && current.parentElement && current.parentElement !== document.body && depth < 5) {
+            while (current && current.parentElement && current.parentElement !== document.body && depth < 4) {
                 var parent = current.parentElement;
-                var rect = parent.getBoundingClientRect();
-                if (rect.width > 0 && rect.width <= 460 && rect.height >= window.innerHeight * 0.35) {
+
+                // 條件 1：父層含地圖畫布、canvas、搜尋框或工具列，立即停止攀爬
+                if (containsMapOrEditorRoot(parent)) {
+                    break;
+                }
+
+                // 條件 2：父層除 current 外還有其他大尺寸可見兄弟元素（左右/上下分割共用殼），立即停止
+                var hasLargeSibling = false;
+                var children = parent.children || [];
+                for (var s = 0; s < children.length; s++) {
+                    var sibling = children[s];
+                    if (!sibling || sibling === current || sibling.id === BACKDROP_ID) continue;
+                    if (!isElementUsable(sibling)) continue;
+                    var sRect = sibling.getBoundingClientRect();
+                    if (sRect.height >= viewportHeight * 0.30 && sRect.width >= 40) {
+                        hasLargeSibling = true;
+                        break;
+                    }
+                }
+                if (hasLargeSibling) {
+                    break;
+                }
+
+                // 條件 3：父層佔滿整個視窗寬度且明顯寬於 #featurelist-pane，代表全螢幕外殼，立即停止
+                var currentRect = current.getBoundingClientRect();
+                var pRect = parent.getBoundingClientRect();
+                if (pRect.width >= viewportWidth - 8 && pRect.width > currentRect.width + 16) {
+                    break;
+                }
+
+                if (pRect.width > 0 && pRect.width <= 460 && pRect.height >= viewportHeight * 0.35) {
                     bestPanel = parent;
                     current = parent;
                     depth++;
@@ -215,13 +314,20 @@
             return bestPanel;
         }
 
+        // 第二階段結構啟發式掃描：僅在編輯頁執行，並嚴格跳過任何含地圖/編輯器根節點之容器
+        if (!detectIsEditorPage()) {
+            return null;
+        }
+
         var containers = document.querySelectorAll('div, aside, section');
-        var viewportHeight = window.innerHeight || 600;
-        var viewportWidth = window.innerWidth || 360;
+        var maxPanelWidth = Math.min(380, viewportWidth * 0.88);
 
         for (var i = 0; i < containers.length; i++) {
             var candidate = containers[i];
             if (candidate.id === 'map-canvas' || candidate.id === 'lyra-canvas' || candidate.id === BACKDROP_ID) {
+                continue;
+            }
+            if (containsMapOrEditorRoot(candidate)) {
                 continue;
             }
             var cStyle = window.getComputedStyle(candidate);
@@ -230,7 +336,7 @@
 
             var cRect = candidate.getBoundingClientRect();
             var isLeftAligned = cRect.left >= -460 && cRect.left <= 36;
-            var isPanelWidth = cRect.width >= 200 && cRect.width <= Math.min(450, viewportWidth * 0.92);
+            var isPanelWidth = cRect.width >= 200 && cRect.width <= maxPanelWidth;
             var isTallEnough = cRect.height >= viewportHeight * 0.42;
 
             if (isLeftAligned && isPanelWidth && isTallEnough) {
@@ -273,6 +379,17 @@
     }
 
     /**
+     * 檢查是否允許將指定 roleAttr 標記於元素上（防止 layer-panel 誤標含地圖或非編輯頁容器）
+     */
+    function canAssignRole(roleAttr, el) {
+        if (!el) return false;
+        if (roleAttr === 'layer-panel') {
+            return detectIsEditorPage() && !containsMapOrEditorRoot(el);
+        }
+        return true;
+    }
+
+    /**
      * 統一的多重容錯 DOM 搜尋函式
      * @param {string|object} strategyOrKey - 可傳入 DOM_TARGETS 的 key (如 'addMarkerTool') 或自訂策略物件
      * @returns {HTMLElement|null}
@@ -287,7 +404,7 @@
         // 對 layerPanel 特別優先檢查是否能往上提升至完整左側面板容器
         if (strategyOrKey === 'layerPanel' && typeof strategy.heuristic === 'function') {
             var panelEl = strategy.heuristic();
-            if (panelEl) {
+            if (panelEl && canAssignRole(strategy.roleAttr, panelEl)) {
                 if (strategy.roleAttr) {
                     panelEl.setAttribute('data-mygmap-role', strategy.roleAttr);
                 }
@@ -299,7 +416,7 @@
         if (Array.isArray(strategy.ids)) {
             for (var i = 0; i < strategy.ids.length; i++) {
                 var byId = document.getElementById(strategy.ids[i]);
-                if (byId && isElementUsable(byId)) {
+                if (byId && isElementUsable(byId) && canAssignRole(strategy.roleAttr, byId)) {
                     if (strategy.roleAttr) {
                         byId.setAttribute('data-mygmap-role', strategy.roleAttr);
                     }
@@ -311,7 +428,7 @@
         // Priority 2: 語意屬性匹配 (aria-label / data-tooltip / title / placeholder)
         if (Array.isArray(strategy.labels) && strategy.labels.length > 0) {
             var byLabel = findBySemanticLabels(strategy.labels);
-            if (byLabel) {
+            if (byLabel && canAssignRole(strategy.roleAttr, byLabel)) {
                 if (strategy.roleAttr) {
                     byLabel.setAttribute('data-mygmap-role', strategy.roleAttr);
                 }
@@ -324,7 +441,7 @@
             for (var s = 0; s < strategy.selectors.length; s++) {
                 try {
                     var bySel = document.querySelector(strategy.selectors[s]);
-                    if (bySel && isElementUsable(bySel)) {
+                    if (bySel && isElementUsable(bySel) && canAssignRole(strategy.roleAttr, bySel)) {
                         if (strategy.roleAttr) {
                             bySel.setAttribute('data-mygmap-role', strategy.roleAttr);
                         }
@@ -339,7 +456,7 @@
         // Priority 4: 結構啟發式搜尋 (Heuristic Fallback)
         if (typeof strategy.heuristic === 'function') {
             var byHeuristic = strategy.heuristic();
-            if (byHeuristic && isElementUsable(byHeuristic)) {
+            if (byHeuristic && isElementUsable(byHeuristic) && canAssignRole(strategy.roleAttr, byHeuristic)) {
                 if (strategy.roleAttr) {
                     byHeuristic.setAttribute('data-mygmap-role', strategy.roleAttr);
                 }
@@ -352,11 +469,32 @@
 
     /**
      * 掃描全頁 DOM 並標記 data-mygmap-role，供 inject_style.css 套用行動版抽屜與觸控放大樣式
+     * Phase 10 調整順序：
+     * 1. 先標記地圖主畫布 [data-mygmap-role="map-canvas"]
+     * 2. 執行自我修復清理：移除任何誤標在地圖共用容器或非編輯頁的 layer-panel 標記
+     * 3. 再依序標記各 DOM_TARGETS（並二次確認無誤標）
      */
     function scanAndTagDom() {
         var foundSummary = {};
-        var keys = Object.keys(DOM_TARGETS);
 
+        // 1. 先標記地圖主畫布以套用多點觸控、滿版可視與保護機制
+        var mapCanvas = findMapCanvasElement();
+        if (mapCanvas) {
+            mapCanvas.setAttribute('data-mygmap-role', 'map-canvas');
+        }
+
+        // 2. 自我修復清理：立即解除任何誤標在地圖/編輯器根容器或非編輯頁的 layer-panel 隱藏狀態
+        var isEditor = detectIsEditorPage();
+        var existingPanels = document.querySelectorAll('[data-mygmap-role="layer-panel"]');
+        for (var p = 0; p < existingPanels.length; p++) {
+            var taggedPanel = existingPanels[p];
+            if (!isEditor || containsMapOrEditorRoot(taggedPanel)) {
+                taggedPanel.removeAttribute('data-mygmap-role');
+            }
+        }
+
+        // 3. 掃描並標記所有關鍵節點
+        var keys = Object.keys(DOM_TARGETS);
         for (var i = 0; i < keys.length; i++) {
             var key = keys[i];
             var el = findElement(key);
@@ -371,10 +509,14 @@
             }
         }
 
-        // 標記地圖主畫布以套用多點觸控與手勢隔離樣式
-        var mapCanvas = document.getElementById('map-canvas') || document.getElementById('lyra-canvas');
-        if (mapCanvas) {
-            mapCanvas.setAttribute('data-mygmap-role', 'map-canvas');
+        // 4. 二次防線：確保最終沒有任何誤標的 layer-panel 殘留
+        isEditor = detectIsEditorPage();
+        var postPanels = document.querySelectorAll('[data-mygmap-role="layer-panel"]');
+        for (var q = 0; q < postPanels.length; q++) {
+            if (!isEditor || containsMapOrEditorRoot(postPanels[q])) {
+                postPanels[q].removeAttribute('data-mygmap-role');
+                foundSummary.layerPanel = false;
+            }
         }
 
         return foundSummary;
@@ -453,8 +595,57 @@
         inspectMode: false,
         activeTool: 'pan',
         lastReportedEditorMode: null,
+        lastResizedEditorUrl: '',
+        initialDrawerResizeDone: false,
+        lastExternalNavTriggerAt: 0,
         initialized: false
     };
+
+    var mapResizeDebounceTimer = null;
+
+    /**
+     * Phase 10：在編輯頁套用手機優化排版並隱藏左側圖層欄後，延遲 120ms 觸發 resize（防抖），
+     * 讓 Google Maps JS 主動重新計算 100vw 寬度並重繪地圖圖磚。
+     */
+    function scheduleMapResizeIfNeeded(forceSchedule) {
+        if (!helperState.mobileMode || !detectIsEditorPage()) {
+            return;
+        }
+        var mapEl = document.querySelector('[data-mygmap-role="map-canvas"]') ||
+            document.getElementById('map-canvas') ||
+            document.getElementById('lyra-canvas');
+        if (!mapEl) {
+            return;
+        }
+
+        var currentHref = (window.location && window.location.href) ? String(window.location.href) : '';
+        var hasLayerPanel = Boolean(
+            document.querySelector('[data-mygmap-role="layer-panel"]') ||
+            document.getElementById('featurelist-pane')
+        );
+
+        var needsInitialUrlResize = helperState.lastResizedEditorUrl !== currentHref;
+        var needsFirstDrawerResize = hasLayerPanel && !helperState.initialDrawerResizeDone;
+
+        if (!forceSchedule && !needsInitialUrlResize && !needsFirstDrawerResize) {
+            return;
+        }
+
+        helperState.lastResizedEditorUrl = currentHref;
+        if (hasLayerPanel) {
+            helperState.initialDrawerResizeDone = true;
+        }
+
+        if (mapResizeDebounceTimer) {
+            clearTimeout(mapResizeDebounceTimer);
+        }
+        mapResizeDebounceTimer = setTimeout(function () {
+            mapResizeDebounceTimer = null;
+            try {
+                window.dispatchEvent(new Event('resize'));
+            } catch (_e) {}
+        }, 120);
+    }
 
     /**
      * 套用 body class 狀態 (mygmap-mobile-mode, mygmap-drawer-open / mygmap-drawer-closed, mygmap-inspect-mode)
@@ -489,7 +680,12 @@
      */
     function reportPageModeIfNeeded(forceReport) {
         var isEditor = detectIsEditorPage();
-        if (forceReport || helperState.lastReportedEditorMode !== isEditor) {
+        var prevEditorMode = helperState.lastReportedEditorMode;
+        if (!isEditor) {
+            helperState.lastResizedEditorUrl = '';
+            helperState.initialDrawerResizeDone = false;
+        }
+        if (forceReport || prevEditorMode !== isEditor) {
             helperState.lastReportedEditorMode = isEditor;
             try {
                 if (window.AndroidBridge && typeof window.AndroidBridge.onPageModeChanged === 'function') {
@@ -497,6 +693,9 @@
                 }
             } catch (err) {
                 console.warn('[MyGMap] AndroidBridge.onPageModeChanged error:', err);
+            }
+            if (isEditor && prevEditorMode === false) {
+                scheduleMapResizeIfNeeded(true);
             }
         }
         return isEditor;
@@ -1545,6 +1744,82 @@
         return { lat: lat, lng: lng };
     }
 
+    /**
+     * Phase 11：尋找所有可能包含目前選取圖釘資訊的氣泡窗、對話框或詳情卡片容器
+     */
+    function findActivePinContainers() {
+        var selectors = [
+            '#map-infowindow-container',
+            '[id*="map-infowindow"]',
+            '.gm-style-iw',
+            '.hz-infowindow',
+            '[class*="infowindow"]',
+            '[role="dialog"]',
+            '[id*="feature-details"]',
+            '[class*="feature-details"]',
+            '[class*="detail-card"]',
+            '#featurelist-pane [aria-selected="true"]'
+        ];
+        var list = [];
+        for (var i = 0; i < selectors.length; i++) {
+            try {
+                var els = document.querySelectorAll(selectors[i]);
+                for (var j = 0; j < els.length; j++) {
+                    var el = els[j];
+                    if (el && el.id !== BACKDROP_ID && isElementUsable(el) && list.indexOf(el) === -1) {
+                        list.push(el);
+                    }
+                }
+            } catch (_e) {}
+        }
+        return list;
+    }
+
+    function extractPinTitleFromContainers(containers) {
+        var titleNode = findInfoWindowTitleField();
+        if (titleNode) {
+            var rawTitle = ('value' in titleNode && titleNode.value)
+                ? titleNode.value
+                : (titleNode.textContent || '');
+            var cleaned = String(rawTitle || '').replace(/\s+/g, ' ').trim();
+            if (cleaned) return cleaned;
+        }
+        var titleSelectors = [
+            '[id^="map-infowindow-attr-"][id$="-value"]',
+            '[id*="infowindow"][id*="title"]',
+            '[class*="infowindow"][class*="title"]',
+            '[role="heading"]',
+            'h1', 'h2', 'h3'
+        ];
+        for (var i = 0; i < containers.length; i++) {
+            var c = containers[i];
+            for (var s = 0; s < titleSelectors.length; s++) {
+                try {
+                    var match = c.querySelector(titleSelectors[s]);
+                    if (match && isElementUsable(match)) {
+                        var txt = (match.value !== undefined && match.value !== null && String(match.value).trim())
+                            ? String(match.value)
+                            : (match.textContent || '');
+                        txt = txt.replace(/\s+/g, ' ').trim();
+                        if (txt) return txt;
+                    }
+                } catch (_e) {}
+            }
+            var textLines = ((c.innerText || c.textContent || '') + '').split(/\r?\n/);
+            for (var l = 0; l < textLines.length; l++) {
+                var line = textLines[l].replace(/\s+/g, ' ').trim();
+                if (
+                    line &&
+                    line.length <= 80 &&
+                    !/^(導航|規劃路線|Directions|編輯|Edit|刪除|Delete|關閉|Close|詳細資料|Details)$/i.test(line)
+                ) {
+                    return line;
+                }
+            }
+        }
+        return '';
+    }
+
     function extractNavigationContext() {
         var href = (window.location && window.location.href) ? String(window.location.href) : '';
         var mid = '';
@@ -1579,35 +1854,40 @@
             }
         }
 
-        // 2. 從目前展開的圖釘氣泡窗 (#map-infowindow-container) 提取標題與座標
-        var selectedPinTitle = '';
+        // 2. 從目前展開的圖釘氣泡窗 (#map-infowindow-container / .gm-style-iw / [role="dialog"] / 詳情卡片) 提取標題與座標
+        var pinContainers = findActivePinContainers();
+        var selectedPinTitle = extractPinTitleFromContainers(pinContainers);
         var selectedPinLat = null;
         var selectedPinLng = null;
-        var infoContainer = findInfoWindowContainer();
-        if (infoContainer && isElementUsable(infoContainer)) {
-            var titleNode = findInfoWindowTitleField();
-            if (titleNode) {
-                var rawTitle = ('value' in titleNode && titleNode.value)
-                    ? titleNode.value
-                    : (titleNode.textContent || '');
-                selectedPinTitle = String(rawTitle || '').replace(/\s+/g, ' ').trim();
-            }
-            var infoText = (infoContainer.innerText || infoContainer.textContent || '');
-            var pinCoordPair = parseLatLngPairFromString(infoText);
-            if (!pinCoordPair) {
-                // 檢查氣泡窗內是否有指向 Google Maps 的連結包含座標
-                var links = infoContainer.querySelectorAll('a[href]');
-                for (var i = 0; i < links.length; i++) {
-                    var linkPair = parseLatLngPairFromString(links[i].getAttribute('href') || '');
-                    if (linkPair) {
-                        pinCoordPair = linkPair;
-                        break;
-                    }
+
+        for (var cIdx = 0; cIdx < pinContainers.length; cIdx++) {
+            var container = pinContainers[cIdx];
+            var pinCoordPair = null;
+
+            // 先檢查氣泡窗或詳情卡內的 <a> 連結（如 /maps/dir 連結內常直接帶有座標）
+            var links = container.querySelectorAll ? container.querySelectorAll('a[href]') : [];
+            for (var i = 0; i < links.length; i++) {
+                var linkPair = parseLatLngPairFromString(links[i].getAttribute('href') || '');
+                if (linkPair) {
+                    pinCoordPair = linkPair;
+                    break;
                 }
+            }
+            if (!pinCoordPair) {
+                var dataLat = container.getAttribute && container.getAttribute('data-lat');
+                var dataLng = container.getAttribute && container.getAttribute('data-lng');
+                if (dataLat && dataLng) {
+                    pinCoordPair = parseLatLngPairFromString(dataLat + ',' + dataLng);
+                }
+            }
+            if (!pinCoordPair) {
+                var infoText = (container.innerText || container.textContent || '');
+                pinCoordPair = parseLatLngPairFromString(infoText);
             }
             if (pinCoordPair) {
                 selectedPinLat = pinCoordPair.lat;
                 selectedPinLng = pinCoordPair.lng;
+                break;
             }
         }
 
@@ -1637,6 +1917,179 @@
             searchBoxLat: searchBoxLat,
             searchBoxLng: searchBoxLng
         };
+    }
+
+    /**
+     * Phase 11：判斷網址是否屬於外部 Google Maps 導航 / 地點 / 短網址連結（排除 /maps/d/ 我的地圖與登入頁）
+     */
+    function isExternalGoogleMapsUrl(rawUrl) {
+        if (!rawUrl) return false;
+        var urlStr = String(rawUrl).trim();
+        if (!urlStr) return false;
+        var lower = urlStr.toLowerCase();
+
+        if (
+            lower.indexOf('google.navigation:') === 0 ||
+            lower.indexOf('geo:') === 0 ||
+            lower.indexOf('google.streetview:') === 0
+        ) {
+            return true;
+        }
+
+        if (
+            lower.indexOf('accounts.google.') !== -1 ||
+            /\/maps\/d(?:\/|[?#]|$)/i.test(lower)
+        ) {
+            return false;
+        }
+
+        if (/^https?:\/\/maps\.app\.goo\.gl\//i.test(urlStr)) return true;
+        if (/^https?:\/\/goo\.gl\/maps(?:\/|$)/i.test(urlStr)) return true;
+        if (/^https?:\/\/maps\.google\.[a-z.]+(?:\/|$|[?#])/i.test(urlStr)) return true;
+        if (/^https?:\/\/(?:www\.)?google\.[a-z.]+\/maps(?:\/dir|\/place|\/search|\/@|\/?(?:[?#]|$))/i.test(urlStr)) {
+            return true;
+        }
+        return false;
+    }
+
+    function dispatchExternalNavigationToAndroid(targetUrl, contextObj) {
+        helperState.lastExternalNavTriggerAt = Date.now();
+        var ctx = contextObj || extractNavigationContext();
+        try {
+            if (window.AndroidBridge && typeof window.AndroidBridge.onExternalNavigationRequested === 'function') {
+                window.AndroidBridge.onExternalNavigationRequested(
+                    targetUrl ? String(targetUrl) : '',
+                    JSON.stringify(ctx)
+                );
+                return true;
+            }
+        } catch (err) {
+            console.warn('[MyGMap] AndroidBridge.onExternalNavigationRequested error:', err);
+        }
+        return false;
+    }
+
+    /**
+     * Phase 11：安全包裝 window.open，攔截 Google Maps 導航 / 地點彈窗並直接轉交 Android 原生開啟
+     */
+    function installWindowOpenInterceptor() {
+        if (window.__myGMapWindowOpenWrapped) return;
+        var originalOpen = typeof window.open === 'function' ? window.open : null;
+        window.__myGMapWindowOpenWrapped = true;
+
+        window.open = function (url) {
+            try {
+                var urlStr = (url !== null && url !== undefined) ? String(url).trim() : '';
+                if (urlStr && isExternalGoogleMapsUrl(urlStr)) {
+                    if (dispatchExternalNavigationToAndroid(urlStr, extractNavigationContext())) {
+                        return null;
+                    }
+                }
+            } catch (err) {
+                console.warn('[MyGMap] window.open interceptor error:', err);
+            }
+            if (originalOpen) {
+                return originalOpen.apply(window, arguments);
+            }
+            return null;
+        };
+    }
+
+    function isInsideInfoOrDetailCard(el) {
+        if (!el || typeof el.closest !== 'function') return false;
+        return Boolean(el.closest(
+            '#map-infowindow-container, [id*="map-infowindow"], .gm-style-iw, ' +
+            '.hz-infowindow, [class*="infowindow"], [role="dialog"], ' +
+            '[id*="feature-details"], [class*="feature-details"], [class*="detail-card"]'
+        ));
+    }
+
+    function findNavigationTriggerElement(rawTarget) {
+        if (!rawTarget || rawTarget.nodeType !== 1) return null;
+
+        // 1. 直接或上層為導航 / Google Maps <a> 連結
+        if (typeof rawTarget.closest === 'function') {
+            var linkEl = rawTarget.closest(
+                'a[href*="/maps/dir"], a[href*="maps.google."], a[href*="maps.app.goo.gl"], ' +
+                'a[href*="goo.gl/maps"], a[href^="google.navigation:"], a[href^="geo:"]'
+            );
+            if (linkEl) {
+                return { element: linkEl, href: linkEl.getAttribute('href') || linkEl.href || '' };
+            }
+
+            // 若位於氣泡窗 / 詳情卡內的任何 <a> 指向外部 Google Maps
+            var anyAnchor = rawTarget.closest('a[href]');
+            if (anyAnchor) {
+                var anyHref = anyAnchor.getAttribute('href') || anyAnchor.href || '';
+                if (isExternalGoogleMapsUrl(anyHref)) {
+                    return { element: anyAnchor, href: anyHref };
+                }
+            }
+
+            // 2. 明確 ID 的氣泡窗導航按鈕
+            var directDirBtn = rawTarget.closest('#map-infowindow-directions-button');
+            if (directDirBtn) {
+                var directHref = directDirBtn.getAttribute('href') || '';
+                return { element: directDirBtn, href: directHref };
+            }
+
+            // 3. 位於氣泡窗 / 詳情卡內的語意導航按鈕（排除頂部編輯器工具列的新增路線工具）
+            var semanticBtn = rawTarget.closest(
+                '[aria-label*="導航"], [aria-label*="規劃路線"], [aria-label*="Directions"], ' +
+                '[data-tooltip*="導航"], [data-tooltip*="規劃路線"], [data-tooltip*="Directions"], ' +
+                '[title*="導航"], [title*="規劃路線"], [title*="Directions"]'
+            );
+            if (semanticBtn && isInsideInfoOrDetailCard(semanticBtn)) {
+                var innerLink = semanticBtn.querySelector ? semanticBtn.querySelector('a[href]') : null;
+                var btnHref = semanticBtn.getAttribute('href') || (innerLink ? (innerLink.getAttribute('href') || innerLink.href || '') : '');
+                return { element: semanticBtn, href: btnHref };
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Phase 11：全域 click 監聽（非 Inspect Mode 時）作為氣泡窗「導航 / 規劃路線」按鈕的保底攔截
+     */
+    function handleDocumentNavigationClick(event) {
+        if (helperState.inspectMode) return;
+        if (!event || !event.target) return;
+
+        var matched = findNavigationTriggerElement(event.target);
+        if (!matched) return;
+
+        var href = matched.href ? String(matched.href).trim() : '';
+        if (href && isExternalGoogleMapsUrl(href)) {
+            event.preventDefault();
+            event.stopPropagation();
+            dispatchExternalNavigationToAndroid(href, extractNavigationContext());
+            return;
+        }
+
+        // 無直接 href（由 Closure / 網頁 JS 處理）：延遲 220ms 確認未發生跳轉或 window.open 時以選取圖釘保底喚起導航
+        var clickedAt = Date.now();
+        var hrefBefore = (window.location && window.location.href) ? String(window.location.href) : '';
+        var snapshotContext = extractNavigationContext();
+
+        setTimeout(function () {
+            if (helperState.lastExternalNavTriggerAt >= clickedAt) {
+                return;
+            }
+            var hrefAfter = (window.location && window.location.href) ? String(window.location.href) : '';
+            if (hrefAfter && hrefBefore && hrefAfter !== hrefBefore) {
+                return;
+            }
+            var liveContext = extractNavigationContext();
+            var hasLivePin = (liveContext.selectedPinLat !== null && liveContext.selectedPinLng !== null) ||
+                Boolean(liveContext.selectedPinTitle && liveContext.selectedPinTitle.trim());
+            var finalContext = hasLivePin ? liveContext : snapshotContext;
+            var hasPinInfo = (finalContext.selectedPinLat !== null && finalContext.selectedPinLng !== null) ||
+                Boolean(finalContext.selectedPinTitle && finalContext.selectedPinTitle.trim());
+
+            if (hasPinInfo) {
+                dispatchExternalNavigationToAndroid('', finalContext);
+            }
+        }, 220);
     }
 
     /**
@@ -1670,6 +2123,7 @@
             var summary = scanAndTagDom();
             applyBodyClasses();
             reportPageModeIfNeeded(false);
+            scheduleMapResizeIfNeeded(false);
             return summary;
         },
 
@@ -1867,6 +2321,7 @@
             var domSummary = scanAndTagDom();
             applyBodyClasses();
             var isEditor = reportPageModeIfNeeded(true);
+            scheduleMapResizeIfNeeded(false);
             reportDrawerState();
             reportMobileModeState();
             reportInspectModeState();
@@ -1888,21 +2343,31 @@
     if (!helperState.initialized) {
         helperState.initialized = true;
 
+        // Phase 11：包裝 window.open 以攔截導航彈窗並轉交 Android 原生開啟
+        installWindowOpenInterceptor();
+
         // Capture 階段攔截點擊，確保在 Closure Library 處理前可攔截並進行 DOM 探測
         document.addEventListener('click', handleDocumentInspectClick, true);
+
+        // Phase 11：Capture 階段偵測氣泡窗 / 詳情卡內的導航連結與按鈕點擊
+        document.addEventListener('click', handleDocumentNavigationClick, true);
 
         // 監聽歷史紀錄與網址變化
         window.addEventListener('popstate', function () {
             setTimeout(function () {
                 scanAndTagDom();
+                applyBodyClasses();
                 reportPageModeIfNeeded(false);
+                scheduleMapResizeIfNeeded(false);
             }, 150);
         });
 
         window.addEventListener('hashchange', function () {
             setTimeout(function () {
                 scanAndTagDom();
+                applyBodyClasses();
                 reportPageModeIfNeeded(false);
+                scheduleMapResizeIfNeeded(false);
             }, 150);
         });
 
@@ -1915,6 +2380,7 @@
                 scanAndTagDom();
                 applyBodyClasses();
                 reportPageModeIfNeeded(false);
+                scheduleMapResizeIfNeeded(false);
             }, 350);
         });
 
@@ -1931,4 +2397,5 @@
     scanAndTagDom();
     applyBodyClasses();
     reportPageModeIfNeeded(true);
+    scheduleMapResizeIfNeeded(false);
 })();

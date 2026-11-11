@@ -258,3 +258,221 @@
    - 完成後，請**務必更新 `PROJECT_PLAN.md`**：將 Phase 7 勾選為 `[x]`，並在「Phase 7 交接紀錄」中記錄 `build.bat` 的開源合規設計細節與實測結果。
 ```
 
+---
+
+## 【Phase 8 Prompt】AndroidX WebKit `UserAgentMetadata` 相容性設定與行動/桌面模式優化
+
+```markdown
+請先完整閱讀專案根目錄下的 `PROJECT_PLAN.md`（包含 Phase 1 ~ Phase 7 的交接紀錄與 Phase 8 規格），並檢視現有的 `MyMapWebViewClient.kt`、`MyMapScreen.kt` 與 `MainActivity.kt`。
+
+現在請執行 **Phase 8：實作 AndroidX WebKit `UserAgentMetadata` 標頭同步與行動/桌面檢視模式相容性優化**（注意：完成程式碼修改後**請勿執行 `build.bat` 或 `gradlew` 編譯**，我會自己執行）。
+
+### 本階段實作要求：
+
+1. **整合 AndroidX WebKit `WebSettingsCompat.setUserAgentMetadata()` (`webview/MyMapWebViewClient.kt`)**：
+   - 依據 AndroidX WebKit (`androidx.webkit:webkit:1.11.0`) 官方最佳實踐，當自訂 `WebSettings.userAgentString` 時，應同步透過 `WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)` 與 `WebSettingsCompat.setUserAgentMetadata(webView.settings, metadata)` 更新 Client Hints Metadata，確保 HTTP 標頭與 `userAgentString` 一致：
+   - 從系統 `WebSettings.getDefaultUserAgent(context)` 動態解析目前裝置的 Chromium 主版號與完整版號（例如 `major = "131"`, `full = "131.0.6778.200"`，若解析失敗則使用預設值 `"131"` / `"131.0.6778.200"`）。
+   - 設定 `UserAgentMetadata.BrandVersion` 清單為標準的 `"Not_A Brand"` (`24` / `24.0.0.0`)、`"Chromium"` (`$realMajor` / `$realFull`) 與 `"Google Chrome"` (`$realMajor` / `$realFull`)。
+
+2. **配置「帳號頁面行動版模式」與「地圖頁面桌面版模式」自動同步 (`webview/MyMapWebViewClient.kt`)**：
+   - 當網址屬於 `isGoogleAuthUrl(url) == true`（如 `accounts.google.com`）時：
+     - 支援兩種標準行動瀏覽器相容設定 (`AuthUaProfile`)，預設使用 `CHROME_MOBILE_STANDARD`：
+       - `CHROME_MOBILE_STANDARD`：設定 `userAgentString` 為標準 Chrome Android Reduced 格式 `"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$realMajor.0.0.0 Mobile Safari/537.36"`，並將 `UserAgentMetadata` 設定為 `platform = "Android"`, `platformVersion = "14.0.0"`, `mobile = true`, `model = ""`, `architecture = ""`。
+       - `FIREFOX_MOBILE_STANDARD`（備用選項）：設定 `userAgentString` 為 `"Mozilla/5.0 (Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"`。
+   - 當網址屬於 `isGoogleAuthUrl(url) == false`（如 `www.google.com/maps/d`）時：
+     - 設定 `userAgentString` 為桌面版格式 `"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$realMajor.0.0.0 Safari/537.36"`，並將 `UserAgentMetadata` 設定為 `platform = "Linux"`, `platformVersion = "6.5.0"`, `mobile = false`, `architecture = "x86"`, `bitness = 64`。
+
+3. **調整 WebView 除錯模式預設值 (`MainActivity.kt` & `MyMapScreen.kt`)**：
+   - 將 `MainActivity.kt` 與 `MyMapScreen.kt` 啟動時的 `WebView.setWebContentsDebuggingEnabled` 預設設為 `false`，僅在使用者於地圖編輯器開啟「🎯 DOM 探測除錯模式」時才動態切換為 `true`。
+
+4. **新增帳號頁面「🔄 重整登入狀態 / 切換相容模式」輔助橫幅 (`ui/MyMapScreen.kt` & `webview/MyMapWebViewClient.kt`)**：
+   - 當處於 `accounts.google.com` 或網址包含 `/signin/rejected` 時，於畫面頂部提供「🔄 清除登入快取並重試（切換相容模式）」按鈕：
+     - 點擊時清理 `accounts.google.com` 的舊狀態 Cookie、切換 `AuthUaProfile`，並重新載入 `https://accounts.google.com/ServiceLogin?hl=zh-TW&continue=https%3A%2F%2Fwww.google.com%2Fmaps%2Fd%2F`。
+
+5. **更新單元測試與交接紀錄（請勿執行 build）**：
+   - 同步更新 `UserAgentStrategyTest.kt` 程式碼以對應新版函式。
+   - **請勿執行 `build.bat` 或 `gradlew` 編譯指令**（使用者會自行手動編譯）。
+   - 完成後更新 `PROJECT_PLAN.md`：將 Phase 8 勾選為 `[x]` 並填寫「Phase 8 交接紀錄」。
+```
+
+---
+
+## 【Phase 9 Prompt】徹底解決畫面與工具列跳動迴圈、啟動白屏及切換 App 時的 `ERR_NAME_NOT_RESOLVED` 錯誤（不執行 build）
+
+```markdown
+請先完整閱讀專案根目錄下的 `PROJECT_PLAN.md`（包含 Phase 1 ~ Phase 8 的交接紀錄與最新的 Phase 9 規格），並檢視現有的 `MyMapWebViewClient.kt`、`MyMapScreen.kt` 與 `UserAgentStrategyTest.kt`。
+
+現在請直接修改專案中的檔案，執行 **Phase 9：徹底解決畫面與工具列跳動迴圈、啟動白屏及切換 App 時的 `ERR_NAME_NOT_RESOLVED` 錯誤**（注意：請務必直接寫入修改 `d:\CodeBase\GuiterEvent\MyGMap_guiter` 下的檔案；完成程式碼修改後**請勿執行 `build.bat` 或 `gradlew` 編譯**，我會自己執行）。
+
+### 🔍 三大問題根因分析（務必全部修正）：
+1. **為什麼頂部會在「🔐 OAuth 登入模式」與「📋 地圖列表頁 + 🖥️ 桌面核心」之間瘋狂跳動、底部工具列忽隱忽現？**
+   - `www.google.com/maps/d/` 在載入時會與 `accounts.google.com/ServiceLogin?passive=...` / `CheckCookie` / `SetSID` 進行跨網域被動 Session 檢查與 302 Redirect。
+   - 現有的 `MyMapWebViewClient` 在 `shouldOverrideUrlLoading`、`onPageStarted`、`onPageFinished` 中呼叫 `syncUserAgentAndMetadataForUrl`，只要網址一碰到 `accounts.google.com` 就改成行動版 UA + `AUTH_CLEAN_CHROME`（導致 `MyMapScreen` 把底部工具列跟 FAB 卸載隱藏），一回到 `www.google.com/maps/d/` 又改成桌面版 UA + `DESKTOP_EDITOR`（又把底部工具列掛載出來）。
+   - 重定向中途切換 UA 與 `setUserAgentMetadata` 導致 Google Session 驗證失敗而再次導回 `accounts.google.com`，形成**無限乒乓跳動迴圈**！
+2. **為什麼切換去其他程式再切回來會跳出 `net::ERR_NAME_NOT_RESOLVED (Code: -2)`？**
+   - 從背景切回前景的瞬間 (`Lifecycle.Event.ON_RESUME` 第 0 毫秒)，Android 系統尚未喚醒 App 的前景網路與 DNS，但 `MyMapScreen.kt` 的 `ON_RESUME` 卻立刻在該瞬間執行 `wv.loadUrl(...)`，導致 DNS 解析直接失敗 (`ERR_NAME_NOT_RESOLVED`) 並顯示 Android 內建錯誤頁。
+3. **`WebSettingsCompat.setUserAgentMetadata()` 在導航回呼中造成內部卡死**：
+   - 導航期間呼叫 `setUserAgentMetadata` 會造成 WebView 重定向停滯。
+
+---
+
+### 🛠️ 本階段實作要求：
+
+1. **移除 `WebSettingsCompat.setUserAgentMetadata()` 並恢復保留真實機型的原生 UA 淨化 (`webview/MyMapWebViewClient.kt`)**：
+   - **移除所有 `WebSettingsCompat.setUserAgentMetadata` 相關呼叫**，僅使用標準的 `webView.settings.userAgentString`。
+   - **修正 `buildSanitizedAuthUserAgent(rawDefaultUa: String?)`**：
+     - 讀取系統預設 `rawDefaultUa`（來自 `WebSettings.getDefaultUserAgent(context)`），**僅移除 `; wv` 與 `Version/x.x` 標記**，**完整保留手機原本真實的 Android 版本、真實裝置型號與完整 `Chrome/xxx.0.xxxx.xx` 版號**（若 `rawDefaultUa` 為空或不含 `Chrome` 才退回 `FALLBACK_CLEAN_MOBILE_UA`）。
+
+2. **實作「單向階段鎖定 UA」與被動驗證白名單，徹底終結乒乓迴圈 (`webview/MyMapWebViewClient.kt`)**：
+   - 在 `MyMapWebViewClient.Companion` 新增：
+     - `fun hasGoogleSessionCookie(): Boolean`：檢查 `CookieManager.getInstance().getCookie("https://www.google.com")` 或 `getCookie("https://accounts.google.com")` 是否包含已登入的 Session Cookie（`SID=`、`HSID=`、`SSID=`、`__Secure-1PSID=` 或 `__Secure-3PSID=`）。
+     - `fun isMyMapsUrl(url: String?): Boolean`：判斷網址是否為 Google 我的地圖（host 包含 `google.com` 且 path 以 `/maps/d` 開頭）。
+     - `fun isInteractiveGoogleSignInUrl(url: String?): Boolean`：判斷是否為「真正需要使用者輸入帳密的互動式登入頁」：
+       - 必須屬於 `isGoogleAuthUrl(url) == true`
+       - **且網址不得包含** `passive=true`、`passive=1209600`、`CheckCookie`、`SetSID`、`RotateCookies`、`ListAccounts` 等背景/被動驗證參數！
+     - `fun resolveInitialLoadUrl(): String`：
+       - 若 `hasGoogleSessionCookie() == true`：回傳 `MY_MAPS_HOME_URL` (`"https://www.google.com/maps/d/"`)。
+       - 若 `hasGoogleSessionCookie() == false`：直接回傳 `GOOGLE_SERVICE_LOGIN_URL` (`"https://accounts.google.com/ServiceLogin?hl=zh-TW&continue=https%3A%2F%2Fwww.google.com%2Fmaps%2Fd%2F"`)。
+   - **在 `configureWebView(webView)` 中**：
+     - 若 `hasGoogleSessionCookie() == true`，初始 `userAgentString` 設為 `desktopUa`，初始模式為 `UserAgentMode.DESKTOP_EDITOR`。
+     - 若 `hasGoogleSessionCookie() == false`，初始 `userAgentString` 設為 `sanitizedAuthUa`，初始模式為 `UserAgentMode.AUTH_CLEAN_CHROME`。
+   - **在 `shouldOverrideUrlLoading`、`onPageStarted`、`onPageFinished` 中**：
+     - **徹底刪除 `onPageStarted` 與 `onPageFinished` 裡面的 `syncUserAgentAndMetadataForUrl` 呼叫！** 絕不在頁面載入中途或完成時反覆改動 UA 與 `uaMode`！
+     - 在 `MyMapWebViewClient` 內部維護 `private var currentUaMode: UserAgentMode`：
+       - 當 `currentUaMode == UserAgentMode.AUTH_CLEAN_CHROME` 時：全程保持 `sanitizedAuthUa`（包含經過 `CheckCookie`、`SetSID` 等所有跳轉），**只有當目標網址進入 `isMyMapsUrl(url) == true` 時**，才切換為 `UserAgentMode.DESKTOP_EDITOR`、設定 `view.settings.userAgentString = desktopUa`、通知 `onUserAgentModeChanged(DESKTOP_EDITOR)`，並於 GET 請求時呼叫一次 `view.loadUrl(url)` 載入桌面版地圖！
+       - 當 `currentUaMode == UserAgentMode.DESKTOP_EDITOR` 時：**即使遇到 `accounts.google.com/ServiceLogin?passive=...` 或 `SetSID` 重定向，也絕對不可切回 `AUTH_CLEAN_CHROME`！** 只有當 `!hasGoogleSessionCookie()` 且 `isInteractiveGoogleSignInUrl(url) == true` 時，才切換為 `AUTH_CLEAN_CHROME`。
+
+3. **鎖定 `MyMapScreen.kt` 版面穩定度：底部工具列與 FAB 100% 常駐不跳動 (`ui/MyMapScreen.kt`)**：
+   - **移除 `Scaffold` 的 `bottomBar` 與 `floatingActionButton` 中 `if (uaMode == MyMapWebViewClient.UserAgentMode.DESKTOP_EDITOR)` 的隱藏條件**，讓 `BottomActionBar` 與 `ExtendedFloatingActionButton` **全程 100% 常駐顯示**，徹底杜絕底部工具列忽隱忽現與 WebView 視窗高度跳動！
+   - 將頂部 `AuthCompatibilityBanner` 的 `visible` 條件改為**僅在 `MyMapWebViewClient.isSignInRejectedUrl(currentUrl)` 為 `true` 時才顯示**（一般載入與登入時不彈出橫幅，確保頂部高度固定不跳動；同時在 `BottomActionBar` 的「⚙️ 模式」選單中也可隨時手動觸發清除登入快取重試）。
+   - 在 `AndroidView(factory)` 初始化時，使用 `val initialUrl = MyMapWebViewClient.resolveInitialLoadUrl()` 設定對應的初始 `uaMode` 與 `currentUrl`，並呼叫 `loadUrl(initialUrl)`。
+
+4. **修復切換 App 時的 `net::ERR_NAME_NOT_RESOLVED (Code: -2)` 錯誤 (`ui/MyMapScreen.kt` & `webview/MyMapWebViewClient.kt`)**：
+   - 在 `MyMapScreen.kt` 的 `Lifecycle.Event.ON_RESUME` 中：
+     - 記錄 `webViewCreatedTimestampMs`。若距離建立未滿 `4_000L` 或 `isLoading == true`，僅呼叫 `wv.onResume()`，**絕不執行任何 `loadUrl` 或重載**。
+     - 當從背景切回前景時，使用 `Handler(Looper.getMainLooper()).postDelayed({ ... }, 650L)` **延遲 650ms 等待 Android 系統喚醒 App 網路與 DNS 後**，檢查若 `MyMapWebViewClient.isNetworkAvailable(context)` 為 `true` 且（`webError != null` 或 `wv.url` 為空白/`chrome-error`），自動清除 `webError = null` 並重新載入 `resolveRecoveryUrl(currentUrl, MyMapWebViewClient.resolveInitialLoadUrl())`。
+   - 在 `MyMapWebViewClient.onReceivedError` 中（當 `request.isForMainFrame` 為 `true`）：
+     - 若錯誤為暫時性 DNS / 網路喚醒延遲（`error.errorCode == ERROR_HOST_LOOKUP` / `-2` 或 `description` 包含 `ERR_NAME_NOT_RESOLVED`），先呼叫 `view.stopLoading()` 並透過 `view.postDelayed({ ... }, 1_200L)` 在網路可用時自動重試一次 `view.loadUrl(request.url.toString())`，避免畫面卡在 Android 預設的 `網頁無法使用` 錯誤頁。
+
+5. **更新單元測試與交接紀錄（請勿執行 build）**：
+   - 同步更新 `UserAgentStrategyTest.kt` 以驗證新版 `buildSanitizedAuthUserAgent`、`isMyMapsUrl` 與 `isInteractiveGoogleSignInUrl`。
+   - **請勿執行 `build.bat` 或 `gradlew` 編譯指令**（使用者會自行手動編譯）。
+   - 完成後更新 `PROJECT_PLAN.md`：將 Phase 9 勾選為 `[x]` 並填寫「Phase 9 交接紀錄」。
+```
+
+---
+
+## 【Phase 10 Prompt】修復點選地圖後「手機優化排版」下地圖空白消失（僅「原始桌面排版」正常）問題（不執行 build）
+
+```markdown
+請先完整閱讀專案根目錄下的 `PROJECT_PLAN.md`（包含 Phase 1 ~ Phase 9 的交接紀錄與最新的 Phase 10 規格），並檢視現有的 `app/src/main/assets/inject_script.js`、`app/src/main/assets/inject_style.css` 與 `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`。
+
+現在請直接修改專案中的檔案，執行 **Phase 10：修復點選地圖後在「手機優化排版」下看不到任何地圖（切換為「原始桌面排版」地圖就出現）的問題**（注意：請務必直接寫入修改 `d:\CodeBase\GuiterEvent\MyGMap_guiter` 下的檔案；完成程式碼修改後**請勿執行 `build.bat` 或 `gradlew` 編譯**，我會自己執行）。
+
+### 🔍 問題根因分析（必須精準修正）：
+1. **手機窄螢幕視埠導致 `findLayerPanelByHeuristic()` 把「整張地圖共用容器」當成左側圖層面板藏起來！**
+   - 我們注入了 `<meta name="viewport" content="width=device-width, initial-scale=1.0, ...">`，在手機上 `window.innerWidth` 約為 `360px ~ 412px`。
+   - 現有 `inject_script.js` 的 `findLayerPanelByHeuristic()` 從 `#featurelist-pane` 往上檢查父層時使用 `rect.width <= 460 && rect.height >= window.innerHeight * 0.35`（最多爬 5 層）。
+   - 因為在手機視埠下，**連同時包裹「左側面板 + 地圖畫布 (`#map-canvas` / `#lyra-canvas` / `.gm-style`)」的共用根容器寬度也 <= 460px**，導致迴圈直接往上爬到地圖共用根容器並標記 `data-mygmap-role="layer-panel"`！
+   - 接著 `inject_style.css` 在預設收合狀態 (`body.mygmap-mobile-mode.mygmap-drawer-closed`) 下套用 `transform: translateX(-105%) !important; visibility: hidden !important;`，直接把**整張地圖 + 整個介面**一起移出螢幕左外側隱藏！當使用者切換成「原始桌面排版」（移除 `body.mygmap-mobile-mode`）時該 CSS 失效且觸發 `resize`，地圖就馬上出現了。
+2. **隱藏左側面板後，Google Maps 畫布需要觸發 `resize` 事件才會重算 `100vw` 寬度並重繪圖磚**。
+
+---
+
+### 🛠️ 本階段實作要求：
+
+1. **為 `inject_script.js` 實作地圖畫布保護機制，嚴禁將含地圖的容器標為 `layer-panel` (`assets/inject_script.js`)**：
+   - 新增 helper 函式 `containsMapOrEditorRoot(el)`：
+     - 若 `!el || el === document.body || el === document.documentElement`，回傳 `true`。
+     - 若 `el` 本身符合或內部包含以下任一節點：`#map-canvas`、`#lyra-canvas`、`#map-container`、`.gm-style`、`canvas`、`#mapsprosearch-field`、`[role="toolbar"]`、`[data-mygmap-role="map-canvas"]`，一律回傳 `true`（代表這是地圖畫布或其共用根容器，**絕對禁止**被標記為 `layer-panel`）。
+   - **調整 `scanAndTagDom()` 的執行順序與自我修復**：
+     - **先標記地圖畫布 `[data-mygmap-role="map-canvas"]`**：尋找 `#map-canvas` 或 `#lyra-canvas`，若找不到則找 `.gm-style` 的外層地圖容器（需確認該容器不包含 `#featurelist-pane`）。
+     - **自我修復清理**：檢查畫面上所有現存的 `[data-mygmap-role="layer-panel"]`，只要 `containsMapOrEditorRoot(el)` 為 `true`（或 `detectIsEditorPage()` 為 `false`），立即呼叫 `el.removeAttribute('data-mygmap-role')` 解除錯誤隱藏！
+   - **重寫 `findLayerPanelByHeuristic()`**：
+     - 若 `existingTagged` 已存在，必須同時滿足 `isElementUsable(existingTagged) && !containsMapOrEditorRoot(existingTagged)` 才沿用，否則先移除其 `data-mygmap-role`。
+     - 當 `#featurelist-pane` 存在時，往上檢查 `parent` 最多 4 層，但只要符合下列**任一條件**就**立即 `break` 停止攀爬**（寧可只標記 `#featurelist-pane` 本身，也絕不爬進外層地圖共用容器）：
+       1. `containsMapOrEditorRoot(parent)` 為 `true`（`parent` 含地圖、`canvas`、搜尋框或工具列）。
+       2. `parent` 除了 `current` 之外，還有其他高度 `>= window.innerHeight * 0.30`、寬度 `>= 40` 的可見子元素（表示 `parent` 是左右或上下分割的版面共用容器，另一個兄弟節點就是地圖畫布！）。
+       3. `pRect.width >= viewportWidth - 8` 且 `pRect.width > currentRect.width + 16`（代表 `parent` 是比 `#featurelist-pane` 更寬的全螢幕外殼）。
+     - 第二階段結構啟發式掃描（未找到 `#featurelist-pane` 時）：必須僅在 `detectIsEditorPage() === true` 時才執行，嚴格跳過 `containsMapOrEditorRoot(candidate)` 為 `true` 的所有元素，並限制 `cRect.width <= Math.min(380, viewportWidth * 0.88)`。
+   - **確保隱藏左側欄後觸發地圖重繪 (`resize`)**：
+     - 當 `detectIsEditorPage() === true` 且 `helperState.mobileMode === true`，若偵測到地圖畫布且剛完成首次圖層面板抽屜套用（或切換至編輯頁）時，延遲 `120ms` 觸發一次 `window.dispatchEvent(new Event('resize'))`（可搭配防抖避免頻繁重複觸發），讓 Google Maps 圖磚以 `100vw` 滿版正常顯示。
+
+2. **補強 `inject_style.css` 地圖畫布滿版與可視性規則 (`assets/inject_style.css`)**：
+   - 在 `body.mygmap-mobile-mode #map-canvas, body.mygmap-mobile-mode #lyra-canvas, body.mygmap-mobile-mode [data-mygmap-role="map-canvas"]` 規則中，補充：
+     - `right: 0 !important;`
+     - `visibility: visible !important;`
+     - `opacity: 1 !important;`
+   - 保持所有現有 CSS3 選擇器名稱（`body.mygmap-mobile-mode`、`mygmap-drawer-closed`、`mygmap-drawer-open`、`#mapsprosearch-field`、`#addtomap-button`、`overscroll-behavior: contain`），不要使用 `:has()` 等舊 WebView 可能不支援的選擇器，以免破壞整條 CSS 規則解析與單元測試斷言。
+
+3. **更新測試與交接紀錄（請勿執行 build）**：
+   - 檢查並視需要擴充 `JsBridgeAndAssetsTest.kt`（驗證 `containsMapOrEditorRoot` 與 `inject_style.css` 地圖畫布可視規則存在）。
+   - **請勿執行 `build.bat` 或 `gradlew` 編譯指令**（使用者會自行手動編譯）。
+   - 完成後更新 `PROJECT_PLAN.md`：將 Phase 10 勾選為 `[x]` 並填寫「Phase 10 交接紀錄」。
+```
+
+---
+
+## 【Phase 11 Prompt】修復點擊地圖圖釘內的「導航」按鈕無反應問題，直接喚起官方 Google Maps App 導航（不執行 build）
+
+```markdown
+請先完整閱讀專案根目錄下的 `PROJECT_PLAN.md`（包含 Phase 1 ~ Phase 10 的交接紀錄與最新的 Phase 11 規格），並檢視現有的 `MyMapWebViewClient.kt`、`MapExportAndIntentHelper.kt`、`MyMapJsBridge.kt`、`MyMapScreen.kt`、`assets/inject_script.js` 與 `MapExportAndIntentHelperTest.kt`。
+
+現在請直接修改專案中的檔案，執行 **Phase 11：修復在 Google 我的地圖點選圖釘後，點擊網頁「導航」按鈕沒有反應的問題，使其穩定喚起官方 Google Maps App 進行導航**（注意：請務必直接寫入修改 `d:\CodeBase\GuiterEvent\MyGMap_guiter` 下的檔案；完成程式碼修改後**請勿執行 `build.bat` 或 `gradlew` 編譯**，我會自己執行）。
+
+### 🔍 「點選地圖上的點，然後點選導航，沒有反應」根因分析：
+1. **WebView 設定 `setSupportMultipleWindows(false)` 且未實作 `WebChromeClient.onCreateWindow`**：
+   - Google 我的地圖圖釘氣泡窗或詳情卡的「導航 / 規劃路線」連結，常透過 `<a target="_blank">` 或 `window.open("https://www.google.com/maps/dir/...", "_blank")` 開啟新分頁，導致目前 WebView 設定靜默吞掉新視窗請求而毫無反應。
+2. **`shouldOverrideUrlLoading` 僅攔截非 `http/https` 協定**：
+   - 目前對於 `https://www.google.com/maps/dir/...`、`https://maps.google.com/maps?...`、`https://www.google.com/maps/place/...`、`https://maps.app.goo.gl/...` 等 HTTPS Google Maps 導航連結皆回傳 `false`，未轉交給手機內的官方 Google Maps App (`com.google.android.apps.maps`)。
+3. **網頁氣泡窗「導航 / 規劃路線」按鈕在編輯/檢視模式下的 JS 行為備援**：
+   - 若氣泡窗內按鈕由 JavaScript 處理點擊（例如 `window.open` 或 Closure Library 事件未帶出跳轉），也需要從 JS 端擷取選取圖釘座標/標題或目標網址並橋接至 Android 原生 `MapExportAndIntentHelper` 啟動導航。
+
+---
+
+### 🛠️ 本階段實作要求：
+
+1. **實作外部 Google Maps URL 辨識與直接喚起導航邏輯 (`webview/MapExportAndIntentHelper.kt`)**：
+   - 新增 `fun isExternalGoogleMapsUrl(url: String?): Boolean`：
+     - **明確排除** Google 我的地圖本身（`MyMapWebViewClient.isMyMapsUrl(url) == true` 或路徑為 `/maps/d` / `/maps/d/...` 以及 Google OAuth 登入網址）。
+     - 當符合以下任一條件時回傳 `true`：
+       - scheme 為 `google.navigation`、`geo` 或 `google.streetview`
+       - host 為 `maps.app.goo.gl`，或 `goo.gl` 且 path 以 `/maps` 開頭
+       - host 為 `maps.google.com`（含各國 Google Maps 網域如 `maps.google.*`）
+       - host 為 `www.google.com` / `google.com`（含各國網域 `www.google.com.tw` 等）且 path 以 `/maps/dir`、`/maps/place`、`/maps/search`、`/maps/@` 開頭或 `path == "/maps"` / `"/maps/"`。
+   - 新增 `fun extractDirectionsDestinationFromUrl(url: String?): String?`：
+     - 嘗試從 `https://www.google.com/maps/dir/?api=1&destination=...`、`daddr=...`、`/maps/dir/.../<dest>`、`q=...`、`query=...` 或 `extractLatLngFromUrl(url)` 解析出目的地字串或 `"lat,lng"` 座標。
+   - 新增 `fun openExternalMapsUrlInGoogleMapsApp(context: Context, rawUrl: String, navContext: MapNavigationContext? = null): Boolean`：
+     - 若為 `geo:`、`google.navigation:`、`google.streetview:`：優先指定 `setPackage(GOOGLE_MAPS_PACKAGE)` 開啟。
+     - 若為 `intent://`：使用 `Intent.parseUri(rawUrl, Intent.URI_INTENT_SCHEME)` 解析後開啟（必要時嘗試 fallback URL）。
+     - 若為 HTTPS Google Maps 導航連結（如包含 `/maps/dir`、`daddr=`、`destination=`）：優先將解析出的目的地（或從 `navContext` 解析出的選取圖釘座標/標題）轉換為 `"google.navigation:q=..."` 並以 `setPackage(GOOGLE_MAPS_PACKAGE)` 喚起 Google Maps App 直接進入導航；若無從解析目的地則直接帶 `setPackage(GOOGLE_MAPS_PACKAGE)` 開啟 `rawUrl`。若裝置未安裝 Google Maps App (`ActivityNotFoundException`)，則自動降級使用不指定套件的一般 `Intent.ACTION_VIEW` 開啟 `rawUrl`。
+
+2. **打通 `WebChromeClient.onCreateWindow` 與 `shouldOverrideUrlLoading` (`webview/MyMapWebViewClient.kt` & `ui/MyMapScreen.kt`)**：
+   - 在 [`MyMapWebViewClient.configureWebView(webView)`](file:///d:/CodeBase/GuiterEvent/MyGMap_guiter/app/src/main/java/com/guiterevent/mygmap/webview/MyMapWebViewClient.kt) 中，將 `setSupportMultipleWindows(true)` 與 `javaScriptCanOpenWindowsAutomatically = true` 開啟。
+   - 在 `MyMapWebViewClient.shouldOverrideUrlLoading` 中（於外部協定處理後、`currentUaMode` 判斷前）：
+     - 若 `MapExportAndIntentHelper.isExternalGoogleMapsUrl(url)` 為 `true`，呼叫 `MapExportAndIntentHelper.openExternalMapsUrlInGoogleMapsApp(view.context, url)` 並回傳 `true`！
+   - 在 [`MyMapScreen.kt`](file:///d:/CodeBase/GuiterEvent/MyGMap_guiter/app/src/main/java/com/guiterevent/mygmap/ui/MyMapScreen.kt) 的 `webChromeClient` 實作 `override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean`：
+     - 建立一個暫時性的隱藏 `WebView`，掛上簡易 `WebViewClient` 於 `shouldOverrideUrlLoading` 擷取新視窗的 URL：
+       - 若該 URL 為 `MapExportAndIntentHelper.isExternalGoogleMapsUrl(url)` 或外部協定 (`intent:` / `geo:` / `google.navigation:`)，立即呼叫 `MapExportAndIntentHelper.openExternalMapsUrlInGoogleMapsApp(ctx, url)` 並安全 `destroy()` 該暫時 WebView。
+       - 若該 URL 仍屬站內一般 `http/https` 網頁（如 Google 登入或我的地圖連結），則改以原本主 `view.loadUrl(url)`（或 `MyMapWebViewClient.loadUrlWithLockedUa(view, url)`）載入並 `destroy()` 暫時 WebView。
+     - 將暫時 `WebView` 放入 `(resultMsg.obj as? WebView.WebViewTransport)?.webView`，執行 `resultMsg.sendToTarget()` 並回傳 `true`（搭配若數秒內未觸發載入則自動釋放暫時 WebView 防洩漏機制）。
+
+3. **新增 JS 端 `window.open` 與氣泡窗「導航」點擊備援 (`assets/inject_script.js` & `webview/MyMapJsBridge.kt` & `ui/MyMapScreen.kt`)**：
+   - 在 [`MyMapJsBridge.kt`](file:///d:/CodeBase/GuiterEvent/MyGMap_guiter/app/src/main/java/com/guiterevent/mygmap/webview/MyMapJsBridge.kt) 新增 `@JavascriptInterface fun onExternalNavigationRequested(targetUrl: String?, contextJson: String?)`，透過 `mainHandler.post` 傳遞給 `MyMapScreen.kt`：
+     - 解析 `contextJson` 為 `MapNavigationContext`（使用現有 `MapExportAndIntentHelper.parseNavigationContextJson`）。
+     - 若 `targetUrl` 非空且為外部 Google Maps 網址，呼叫 `MapExportAndIntentHelper.openExternalMapsUrlInGoogleMapsApp(context, targetUrl, navContext)`；否則呼叫 `MapExportAndIntentHelper.launchGoogleMapsApp(context, GoogleMapsLaunchMode.NAVIGATION, navContext, currentGpsCoordinates)` 直接開啟 Google Maps App 導航！
+   - 在 [`inject_script.js`](file:///d:/CodeBase/GuiterEvent/MyGMap_guiter/app/src/main/assets/inject_script.js) 中：
+     - 安全包裝一次 `window.open`：若第一個參數 `url` 屬於 Google Maps 導航/地點連結（非 `/maps/d/`），直接呼叫 `window.AndroidBridge.onExternalNavigationRequested(String(url), JSON.stringify(extractNavigationContext()))` 並回傳 `null`（其餘呼叫照常委派給原始 `window.open`）。
+     - 增強 `extractNavigationContext()`：除了 `#map-infowindow-container`，同步支援從 `.gm-style-iw`、`[role="dialog"]` 或選取圖釘詳情卡片讀取標題、`<a>` 連結座標與經緯度文字。
+     - 在全域 `click` 監聽（非 Inspect Mode 時）偵測氣泡窗 / 詳情卡內的導航連結與按鈕（例如：`a[href*="/maps/dir"]`、`a[href*="maps.google.com"]`、`#map-infowindow-directions-button` 或位於氣泡窗內的 `[aria-label*="導航"]` / `[aria-label*="規劃路線"]` / `[aria-label*="Directions"]` / `[data-tooltip*="導航"]` / `[data-tooltip*="規劃路線"]` / `[data-tooltip*="Directions"]`）：
+       - 若點擊對象包含 `href` 指向外部 Google Maps 連結，直接 `preventDefault()` 並呼叫 `window.AndroidBridge.onExternalNavigationRequested(href, JSON.stringify(extractNavigationContext()))`。
+       - 若該按鈕沒有直接 `href`（由網頁 JS 處理），延遲 `220ms` 檢查（若此期間網頁未發生跳轉且 `window.open` 未觸發），若目前成功擷取到選取圖釘的座標或標題，立刻呼叫 `window.AndroidBridge.onExternalNavigationRequested("", JSON.stringify(extractNavigationContext()))` 直接喚起 Google Maps App 導航！
+   - 在 [`inject_style.css`](file:///d:/CodeBase/GuiterEvent/MyGMap_guiter/app/src/main/assets/inject_style.css) 的 InfoWindow 按鈕樣式區順手將 `#map-infowindow-directions-button` 與氣泡窗內 `a[href*="/maps/dir"]` 加入觸控熱區保護（`min-height: 42px`, `min-width: 44px`）。
+
+4. **更新單元測試與交接紀錄（請勿執行 build）**：
+   - 在 `MapExportAndIntentHelperTest.kt` 擴充測試 `isExternalGoogleMapsUrl`（確認 `/maps/dir/...`、`maps.google.com`、`maps.app.goo.gl` 回傳 `true`，而 `/maps/d/edit`、`/maps/d/viewer`、`accounts.google.com` 回傳 `false`）與 `extractDirectionsDestinationFromUrl`（解析 `destination=`、`daddr=`、`/maps/dir//25.033964,121.564468`）。
+   - 更新 `JsBridgeAndAssetsTest.kt`（如有需要）。
+   - **請勿執行 `build.bat` 或 `gradlew` 編譯指令**（使用者會自行手動編譯）。
+   - 完成後更新 `PROJECT_PLAN.md`：將 Phase 11 勾選為 `[x]` 並填寫「Phase 11 交接紀錄」。
+```
+

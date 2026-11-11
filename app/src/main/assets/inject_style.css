@@ -22,8 +22,11 @@ body.mygmap-mobile-mode #map-canvas,
 body.mygmap-mobile-mode #lyra-canvas,
 body.mygmap-mobile-mode [data-mygmap-role="map-canvas"] {
     left: 0 !important;
+    right: 0 !important;
     width: 100vw !important;
     max-width: 100vw !important;
+    visibility: visible !important;
+    opacity: 1 !important;
     touch-action: none !important;
     overscroll-behavior: none !important;
     user-select: none !important;
@@ -225,7 +228,10 @@ body.mygmap-mobile-mode #map-infowindow-container [contenteditable="true"] {
 body.mygmap-mobile-mode #map-infowindow-done-editing-button,
 body.mygmap-mobile-mode #map-infowindow-edit-button,
 body.mygmap-mobile-mode #map-infowindow-delete-button,
-body.mygmap-mobile-mode #map-infowindow-cancel-editing-button {
+body.mygmap-mobile-mode #map-infowindow-cancel-editing-button,
+body.mygmap-mobile-mode #map-infowindow-directions-button,
+body.mygmap-mobile-mode #map-infowindow-container a[href*="/maps/dir"],
+body.mygmap-mobile-mode .gm-style-iw a[href*="/maps/dir"] {
     min-height: 42px !important;
     min-width: 44px !important;
     padding: 6px 12px !important;

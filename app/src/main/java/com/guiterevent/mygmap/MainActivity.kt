@@ -30,8 +30,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Debug 建置下開啟 WebView 遠端除錯模式，支援透過 Chrome DevTools (chrome://inspect) 檢視 DOM 與 Console
-        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        // Phase 8：預設關閉 WebView 遠端除錯模式，僅於使用者在編輯器手動開啟「🎯 DOM 探測除錯模式」時才動態設為 true
+        WebView.setWebContentsDebuggingEnabled(false)
 
         // 預先啟用系統 CookieManager
         CookieManager.getInstance().setAcceptCookie(true)

@@ -89,6 +89,31 @@ class JsBridgeAndAssetsTest {
         // Phase 5 required Navigation Context Extraction & Touch Isolation
         assertTrue("JS must expose extractNavigationContext", jsText.contains("extractNavigationContext"))
         assertTrue("CSS must isolate drawer touch-action and overscroll", cssText.contains("overscroll-behavior: contain"))
+
+        // Phase 10 required Map Canvas Protection & Visibility Rules
+        assertTrue("JS must define containsMapOrEditorRoot", jsText.contains("containsMapOrEditorRoot"))
+        assertTrue(
+            "JS must protect map canvas and editor roots from layer-panel tagging",
+            jsText.contains("#map-canvas") && jsText.contains(".gm-style") && jsText.contains("#mapsprosearch-field")
+        )
+        assertTrue("JS must dispatch resize event after drawer layout", jsText.contains("new Event('resize')"))
+
+        val mapCanvasRuleStart = cssText.indexOf("body.mygmap-mobile-mode #map-canvas")
+        assertTrue("CSS must contain map-canvas mobile rule", mapCanvasRuleStart >= 0)
+        val mapCanvasRuleEnd = cssText.indexOf("}", mapCanvasRuleStart)
+        val mapCanvasRuleBlock = cssText.substring(mapCanvasRuleStart, mapCanvasRuleEnd)
+        assertTrue("Map canvas rule must enforce right: 0 !important", mapCanvasRuleBlock.contains("right: 0 !important;"))
+        assertTrue("Map canvas rule must enforce visibility: visible !important", mapCanvasRuleBlock.contains("visibility: visible !important;"))
+        assertTrue("Map canvas rule must enforce opacity: 1 !important", mapCanvasRuleBlock.contains("opacity: 1 !important;"))
+
+        // Phase 11 required External Navigation Interception & InfoWindow Directions Touch Targets
+        assertTrue("JS must call onExternalNavigationRequested", jsText.contains("onExternalNavigationRequested"))
+        assertTrue("JS must wrap window.open", jsText.contains("installWindowOpenInterceptor"))
+        assertTrue("JS must check external Google Maps URLs", jsText.contains("isExternalGoogleMapsUrl"))
+        assertTrue("JS must support .gm-style-iw and [role=\"dialog\"] containers", jsText.contains(".gm-style-iw") && jsText.contains("[role=\"dialog\"]"))
+        assertTrue("JS must detect #map-infowindow-directions-button", jsText.contains("#map-infowindow-directions-button"))
+        assertTrue("CSS must style #map-infowindow-directions-button", cssText.contains("#map-infowindow-directions-button"))
+        assertTrue("CSS must style InfoWindow /maps/dir links", cssText.contains("a[href*=\"/maps/dir\"]"))
     }
 
     @Test

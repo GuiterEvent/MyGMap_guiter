@@ -6,18 +6,25 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -65,6 +72,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -121,8 +129,14 @@ fun MyMapScreen(
     var pageTitle by remember { mutableStateOf("Google 我的地圖") }
     var canGoBack by remember { mutableStateOf(false) }
     var uaMode by remember { mutableStateOf(MyMapWebViewClient.UserAgentMode.DESKTOP_EDITOR) }
+    var activeAuthProfile by remember { mutableStateOf(MyMapWebViewClient.activeAuthUaProfile) }
     var webError by remember { mutableStateOf<String?>(null) }
     var showExitDialog by remember { mutableStateOf(false) }
+
+    // Phase 9：記錄 WebView 建立時間與是否曾進入背景，避免 ON_RESUME 第 0 毫秒搶先 loadUrl 觸發 ERR_NAME_NOT_RESOLVED
+    var webViewCreatedTimestampMs by remember { mutableLongStateOf(0L) }
+    var wasInBackground by remember { mutableStateOf(false) }
+    val resumeHandler = remember { Handler(Looper.getMainLooper()) }
 
     // Phase 2: JS Bridge 狀態與 CSS 改造/DOM 探測控制狀態
     var isEditorPage by remember { mutableStateOf(false) }
@@ -317,6 +331,39 @@ fun MyMapScreen(
 
     val currentLocationPermissionLauncher by rememberUpdatedState(locationPermissionLauncher)
 
+    // Phase 9：清除 Google 登入快取、切換相容模式並強制以登入 UA 重新載入登入頁
+    // （供頂部 AuthCompatibilityBanner 與底部「⚙️ 模式」選單共用）
+    fun resetGoogleLoginAndRetry() {
+        val wv = webViewRef ?: return
+        webError = null
+        isDrawerOpen = false
+        isAddMarkerMode = false
+        activeSearchQuery = null
+        val nextProfile = MyMapWebViewClient.resetGoogleAuthStateAndReload(wv)
+        activeAuthProfile = nextProfile
+        currentUrl = MyMapWebViewClient.GOOGLE_SERVICE_LOGIN_URL
+        Toast.makeText(
+            context,
+            "🔄 已清除登入快取並切換為「${nextProfile.displayName}」重新載入登入頁",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    // Phase 9：重新整理；若目前停留在空白頁或 Android 內建錯誤頁，改以「單向階段鎖定 UA」載入恢復網址
+    fun reloadOrRecover() {
+        val wv = webViewRef ?: return
+        val activeUrl = wv.url
+        if (MyMapWebViewClient.isBlankOrInvalidUrl(activeUrl) || MyMapWebViewClient.isChromeErrorUrl(activeUrl)) {
+            val recoveryUrl = MyMapWebViewClient.resolveRecoveryUrl(
+                currentUrl,
+                MyMapWebViewClient.resolveInitialLoadUrl()
+            )
+            MyMapWebViewClient.loadUrlWithLockedUa(wv, recoveryUrl)
+        } else {
+            wv.reload()
+        }
+    }
+
     fun onMarkCurrentLocationClick() {
         if (isLocatingGps) return
         if (!LocationHelper.hasLocationPermission(context)) {
@@ -364,7 +411,7 @@ fun MyMapScreen(
                     isOffline = false
                     if (wasOffline && webError != null) {
                         webError = null
-                        webViewRef?.reload()
+                        reloadOrRecover()
                     }
                 }
             }
@@ -388,7 +435,10 @@ fun MyMapScreen(
     }
 
     // 監聽 Activity 生命週期：
-    // 1. ON_RESUME：執行 Phase 6 白屏防呆檢查（若 webView.url.isNullOrBlank() 或停留在 about:blank 則自動重載 MY_MAPS_HOME_URL）
+    // 1. ON_RESUME (Phase 9)：
+    //    - 剛建立未滿 4 秒或頁面載入中：僅呼叫 wv.onResume()，絕不 loadUrl / reload。
+    //    - 從背景切回前景：延遲 650ms 等待 Android 系統喚醒 App 前景網路與 DNS 後，
+    //      若網路可用且（有錯誤 / 空白頁 / chrome-error 錯誤頁）才自動重新載入恢復網址，避免 ERR_NAME_NOT_RESOLVED。
     // 2. ON_PAUSE / ON_STOP：強制執行 CookieManager.getInstance().flush() 將 Cookie 寫入磁碟，確保重開 App 登入狀態不遺失
     // 3. onDispose：畫面銷毀時完整釋放 WebView 避免記憶體洩漏
     DisposableEffect(lifecycleOwner) {
@@ -396,31 +446,56 @@ fun MyMapScreen(
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     isOffline = !MyMapWebViewClient.isNetworkAvailable(context)
+                    val cameFromBackground = wasInBackground
+                    wasInBackground = false
                     webViewRef?.let { wv ->
                         wv.onResume()
-                        if (wv.settings.userAgentString != MyMapWebViewClient.DESKTOP_CHROME_UA) {
-                            wv.settings.userAgentString = MyMapWebViewClient.DESKTOP_CHROME_UA
+
+                        val createdAt = webViewCreatedTimestampMs
+                        val sinceCreatedMs = SystemClock.elapsedRealtime() - createdAt
+                        if (createdAt == 0L || sinceCreatedMs < 4_000L || isLoading) {
+                            // 剛啟動或仍在載入中：只恢復 WebView 計時器，絕不搶先重載
+                            return@let
                         }
-                        val activeUrl = wv.url
-                        if (activeUrl.isNullOrBlank() || MyMapWebViewClient.isBlankOrInvalidUrl(activeUrl)) {
-                            val recoveryUrl = MyMapWebViewClient.resolveRecoveryUrl(
-                                currentUrl,
-                                MyMapWebViewClient.MY_MAPS_HOME_URL
-                            )
-                            wv.loadUrl(recoveryUrl)
-                        } else if (!isLoading) {
-                            wv.evaluateJavascript(
-                                "(function(){ return (!document.body || document.body.innerHTML.trim().length === 0) ? 'BLANK' : 'OK'; })()"
-                            ) { domResult ->
-                                if (domResult?.contains("BLANK") == true && !isLoading) {
-                                    val recoveryUrl = MyMapWebViewClient.resolveRecoveryUrl(
-                                        wv.url,
-                                        MyMapWebViewClient.MY_MAPS_HOME_URL
-                                    )
-                                    wv.loadUrl(recoveryUrl)
+                        if (!cameFromBackground) return@let
+
+                        resumeHandler.removeCallbacksAndMessages(null)
+                        resumeHandler.postDelayed({
+                            val target = webViewRef
+                            if (target == null || target !== wv) return@postDelayed
+
+                            val networkOk = MyMapWebViewClient.isNetworkAvailable(context)
+                            isOffline = !networkOk
+                            if (!networkOk || isLoading) return@postDelayed
+
+                            val activeUrl = target.url
+                            val needsRecovery = webError != null ||
+                                activeUrl.isNullOrBlank() ||
+                                MyMapWebViewClient.isBlankOrInvalidUrl(activeUrl) ||
+                                MyMapWebViewClient.isChromeErrorUrl(activeUrl)
+
+                            if (needsRecovery) {
+                                webError = null
+                                val recoveryUrl = MyMapWebViewClient.resolveRecoveryUrl(
+                                    currentUrl,
+                                    MyMapWebViewClient.resolveInitialLoadUrl()
+                                )
+                                MyMapWebViewClient.loadUrlWithLockedUa(target, recoveryUrl)
+                            } else {
+                                // Phase 6 白屏防呆：確認 DOM 是否為空（網路已喚醒後才檢查）
+                                target.evaluateJavascript(
+                                    "(function(){ return (!document.body || document.body.innerHTML.trim().length === 0) ? 'BLANK' : 'OK'; })()"
+                                ) { domResult ->
+                                    if (domResult?.contains("BLANK") == true && !isLoading && webViewRef === target) {
+                                        val recoveryUrl = MyMapWebViewClient.resolveRecoveryUrl(
+                                            target.url,
+                                            MyMapWebViewClient.resolveInitialLoadUrl()
+                                        )
+                                        MyMapWebViewClient.loadUrlWithLockedUa(target, recoveryUrl)
+                                    }
                                 }
                             }
-                        }
+                        }, 650L)
                     }
                 }
                 Lifecycle.Event.ON_PAUSE -> {
@@ -429,6 +504,8 @@ fun MyMapScreen(
                     webViewRef?.onPause()
                 }
                 Lifecycle.Event.ON_STOP -> {
+                    wasInBackground = true
+                    resumeHandler.removeCallbacksAndMessages(null)
                     CookieManager.getInstance().flush()
                     MyMapWebViewClient.flushCookies()
                 }
@@ -438,6 +515,7 @@ fun MyMapScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            resumeHandler.removeCallbacksAndMessages(null)
             pendingGeolocationRequest = null
             CookieManager.getInstance().flush()
             MyMapWebViewClient.flushCookies()
@@ -486,15 +564,31 @@ fun MyMapScreen(
                         isDrawerOpen = false
                         isAddMarkerMode = false
                         activeSearchQuery = null
-                        webViewRef?.loadUrl(MyMapWebViewClient.MY_MAPS_HOME_URL)
+                        webViewRef?.let { wv ->
+                            MyMapWebViewClient.loadUrlWithLockedUa(wv, MyMapWebViewClient.MY_MAPS_HOME_URL)
+                        }
                     },
                     onReloadClick = {
                         isOffline = !MyMapWebViewClient.isNetworkAvailable(context)
                         webError = null
                         isAddMarkerMode = false
-                        webViewRef?.reload()
+                        reloadOrRecover()
                     }
                 )
+
+                // Phase 9：僅在網址確定為登入遭拒 (/signin/rejected、disallowed_useragent) 時才展開橫幅，
+                // 一般載入與登入過程不彈出，確保頂部高度固定不跳動（底部「⚙️ 模式」選單亦可隨時手動清除登入快取重試）
+                AnimatedVisibility(
+                    visible = MyMapWebViewClient.isSignInRejectedUrl(currentUrl)
+                ) {
+                    AuthCompatibilityBanner(
+                        currentProfile = activeAuthProfile,
+                        isRejectedUrl = MyMapWebViewClient.isSignInRejectedUrl(currentUrl),
+                        onResetAuthAndSwitchProfile = {
+                            resetGoogleLoginAndRetry()
+                        }
+                    )
+                }
 
                 // Phase 3：當啟動「📌 插針模式」時，於畫面上方顯示醒目提示橫幅與切回「🖐️ 手型選取/平移模式」快捷按鈕
                 AnimatedVisibility(visible = isAddMarkerMode) {
@@ -544,6 +638,7 @@ fun MyMapScreen(
                             latestInspectedDom = null
                             if (isInspectMode) {
                                 isInspectMode = false
+                                WebView.setWebContentsDebuggingEnabled(false)
                                 webViewRef?.let { WebViewInjector.setInspectMode(it, false) }
                             }
                         }
@@ -564,167 +659,169 @@ fun MyMapScreen(
             }
         },
         bottomBar = {
-            // Phase 3：於非 OAuth 登入頁顯示單手操作友善的 Material 3 原生底部工具列
-            if (uaMode == MyMapWebViewClient.UserAgentMode.DESKTOP_EDITOR) {
-                BottomActionBar(
-                    isEditorPage = isEditorPage,
-                    isDrawerOpen = isDrawerOpen,
-                    isSearchPanelActive = showSearchDialog || activeSearchQuery != null,
-                    isAddMarkerMode = isAddMarkerMode,
-                    isMobileMode = isMobileMode,
-                    isInspectMode = isInspectMode,
-                    onToggleLayerDrawer = {
-                        val wv = webViewRef
-                        if (wv != null) {
-                            val nextOpen = !isDrawerOpen
-                            isDrawerOpen = nextOpen
-                            if (nextOpen && !isMobileMode) {
-                                isMobileMode = true
-                            }
-                            WebViewInjector.toggleLayerDrawer(wv) { actualOpen ->
-                                isDrawerOpen = actualOpen
-                            }
+            // Phase 9：底部工具列全程 100% 常駐顯示（不再依 uaMode 掛載 / 卸載），杜絕忽隱忽現與 WebView 高度跳動
+            BottomActionBar(
+                isEditorPage = isEditorPage,
+                isDrawerOpen = isDrawerOpen,
+                isSearchPanelActive = showSearchDialog || activeSearchQuery != null,
+                isAddMarkerMode = isAddMarkerMode,
+                isMobileMode = isMobileMode,
+                isInspectMode = isInspectMode,
+                onToggleLayerDrawer = {
+                    val wv = webViewRef
+                    if (wv != null) {
+                        val nextOpen = !isDrawerOpen
+                        isDrawerOpen = nextOpen
+                        if (nextOpen && !isMobileMode) {
+                            isMobileMode = true
                         }
-                    },
-                    onOpenSearch = {
-                        showSearchDialog = true
-                    },
-                    onToggleAddMarker = {
-                        val wv = webViewRef
-                        if (wv != null) {
-                            if (!isAddMarkerMode) {
-                                WebViewInjector.activateAddMarkerTool(wv) { ok ->
-                                    if (ok) {
-                                        isAddMarkerMode = true
-                                        isDrawerOpen = false
-                                    } else {
-                                        Toast.makeText(
-                                            context,
-                                            "⚠️ 找不到「新增標記」工具，請確認已進入地圖編輯頁",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            } else {
-                                isAddMarkerMode = false
-                                WebViewInjector.activatePanTool(wv)
-                                Toast.makeText(
-                                    context,
-                                    "🖐️ 已切換回手型選取/平移模式",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                        WebViewInjector.toggleLayerDrawer(wv) { actualOpen ->
+                            isDrawerOpen = actualOpen
                         }
-                    },
-                    onActivatePanTool = {
-                        isAddMarkerMode = false
-                        webViewRef?.let { wv ->
-                            WebViewInjector.activatePanTool(wv)
-                        }
-                        Toast.makeText(
-                            context,
-                            "🖐️ 已切換回手型選取/平移模式",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    onNavigateHome = {
-                        webError = null
-                        isDrawerOpen = false
-                        isAddMarkerMode = false
-                        activeSearchQuery = null
-                        webViewRef?.loadUrl(MyMapWebViewClient.MY_MAPS_HOME_URL)
-                    },
-                    onToggleMobileCssMode = {
-                        val wv = webViewRef
-                        if (wv != null) {
-                            val nextMobile = !isMobileMode
-                            isMobileMode = nextMobile
-                            if (!nextMobile) {
-                                isDrawerOpen = false
-                            }
-                            WebViewInjector.toggleMobileCssMode(wv) { actualMobile ->
-                                isMobileMode = actualMobile
-                                val modeMsg = if (actualMobile) {
-                                    "已切換為：📱 手機優化排版"
+                    }
+                },
+                onOpenSearch = {
+                    showSearchDialog = true
+                },
+                onToggleAddMarker = {
+                    val wv = webViewRef
+                    if (wv != null) {
+                        if (!isAddMarkerMode) {
+                            WebViewInjector.activateAddMarkerTool(wv) { ok ->
+                                if (ok) {
+                                    isAddMarkerMode = true
+                                    isDrawerOpen = false
                                 } else {
-                                    "已切換為：🖥️ 原始桌面排版 (CSS Bypass 逃生門)"
+                                    Toast.makeText(
+                                        context,
+                                        "⚠️ 找不到「新增標記」工具，請確認已進入地圖編輯頁",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 }
-                                Toast.makeText(context, modeMsg, Toast.LENGTH_SHORT).show()
                             }
-                        }
-                    },
-                    onToggleInspectMode = {
-                        val nextInspect = !isInspectMode
-                        isInspectMode = nextInspect
-                        webViewRef?.let { WebViewInjector.setInspectMode(it, nextInspect) }
-                        if (nextInspect) {
+                        } else {
+                            isAddMarkerMode = false
+                            WebViewInjector.activatePanTool(wv)
                             Toast.makeText(
                                 context,
-                                "🔍 DOM 探測模式已開啟：請點擊網頁上任意按鈕檢視 Selector",
+                                "🖐️ 已切換回手型選取/平移模式",
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
-                    },
-                    onUndo = {
-                        webViewRef?.let { wv ->
-                            WebViewInjector.triggerUndo(wv) { ok ->
-                                val msg = if (ok) "↩️ 已觸發復原 (Undo)" else "⚠️ 目前無可復原的動作"
-                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    onRedo = {
-                        webViewRef?.let { wv ->
-                            WebViewInjector.triggerRedo(wv) { ok ->
-                                val msg = if (ok) "↪️ 已觸發重做 (Redo)" else "⚠️ 目前無可重做的動作"
-                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    onOpenInGoogleMaps = {
-                        openGoogleMapsActionDialog()
-                    },
-                    onExportKmlKmz = {
-                        triggerDirectKmlExport(exportAsKml = false)
                     }
-                )
-            }
+                },
+                onActivatePanTool = {
+                    isAddMarkerMode = false
+                    webViewRef?.let { wv ->
+                        WebViewInjector.activatePanTool(wv)
+                    }
+                    Toast.makeText(
+                        context,
+                        "🖐️ 已切換回手型選取/平移模式",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onNavigateHome = {
+                    webError = null
+                    isDrawerOpen = false
+                    isAddMarkerMode = false
+                    activeSearchQuery = null
+                    webViewRef?.let { wv ->
+                        MyMapWebViewClient.loadUrlWithLockedUa(wv, MyMapWebViewClient.MY_MAPS_HOME_URL)
+                    }
+                },
+                onToggleMobileCssMode = {
+                    val wv = webViewRef
+                    if (wv != null) {
+                        val nextMobile = !isMobileMode
+                        isMobileMode = nextMobile
+                        if (!nextMobile) {
+                            isDrawerOpen = false
+                        }
+                        WebViewInjector.toggleMobileCssMode(wv) { actualMobile ->
+                            isMobileMode = actualMobile
+                            val modeMsg = if (actualMobile) {
+                                "已切換為：📱 手機優化排版"
+                            } else {
+                                "已切換為：🖥️ 原始桌面排版 (CSS Bypass 逃生門)"
+                            }
+                            Toast.makeText(context, modeMsg, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onToggleInspectMode = {
+                    val nextInspect = !isInspectMode
+                    isInspectMode = nextInspect
+                    WebView.setWebContentsDebuggingEnabled(nextInspect)
+                    webViewRef?.let { WebViewInjector.setInspectMode(it, nextInspect) }
+                    if (nextInspect) {
+                        Toast.makeText(
+                            context,
+                            "🔍 DOM 探測模式已開啟：請點擊網頁上任意按鈕檢視 Selector",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                },
+                onUndo = {
+                    webViewRef?.let { wv ->
+                        WebViewInjector.triggerUndo(wv) { ok ->
+                            val msg = if (ok) "↩️ 已觸發復原 (Undo)" else "⚠️ 目前無可復原的動作"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onRedo = {
+                    webViewRef?.let { wv ->
+                        WebViewInjector.triggerRedo(wv) { ok ->
+                            val msg = if (ok) "↪️ 已觸發重做 (Redo)" else "⚠️ 目前無可重做的動作"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onOpenInGoogleMaps = {
+                    openGoogleMapsActionDialog()
+                },
+                onExportKmlKmz = {
+                    triggerDirectKmlExport(exportAsKml = false)
+                },
+                onResetGoogleLogin = {
+                    resetGoogleLoginAndRetry()
+                }
+            )
         },
         floatingActionButton = {
-            // Phase 4：於右下方加入醒目的 ExtendedFloatingActionButton「📍 標記目前位置」
-            if (uaMode == MyMapWebViewClient.UserAgentMode.DESKTOP_EDITOR) {
-                ExtendedFloatingActionButton(
-                    onClick = { onMarkCurrentLocationClick() },
-                    modifier = Modifier.padding(
-                        bottom = if (activeSearchQuery != null && webError == null) 66.dp else 0.dp
-                    ),
-                    containerColor = Color(0xFF0F766E),
-                    contentColor = Color.White,
-                    shape = RoundedCornerShape(16.dp),
-                    icon = {
-                        if (isLocatingGps) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.4.dp,
-                                color = Color.White
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.MyLocation,
-                                contentDescription = "標記目前位置",
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                    },
-                    text = {
-                        Text(
-                            text = if (isLocatingGps) "📡 GPS 定位中…" else "📍 標記目前位置",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
+            // Phase 4 / Phase 9：右下方「📍 標記目前位置」FAB 全程 100% 常駐顯示（不再依 uaMode 隱藏）
+            ExtendedFloatingActionButton(
+                onClick = { onMarkCurrentLocationClick() },
+                modifier = Modifier.padding(
+                    bottom = if (activeSearchQuery != null && webError == null) 66.dp else 0.dp
+                ),
+                containerColor = Color(0xFF0F766E),
+                contentColor = Color.White,
+                shape = RoundedCornerShape(16.dp),
+                icon = {
+                    if (isLocatingGps) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.4.dp,
+                            color = Color.White
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = "標記目前位置",
+                            modifier = Modifier.size(22.dp)
                         )
                     }
-                )
-            }
+                },
+                text = {
+                    Text(
+                        text = if (isLocatingGps) "📡 GPS 定位中…" else "📍 標記目前位置",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            )
         }
     ) { innerPadding ->
         Box(
@@ -735,8 +832,8 @@ fun MyMapScreen(
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
-                    // Debug 建置下開啟 Chrome DevTools 遠端除錯 (chrome://inspect)
-                    WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+                    // Phase 8：預設關閉 WebView 遠端除錯模式，僅於使用者在編輯器開啟「🎯 DOM 探測除錯模式」時才動態切換為 true
+                    WebView.setWebContentsDebuggingEnabled(false)
 
                     WebView(ctx).apply {
                         layoutParams = ViewGroup.LayoutParams(
@@ -784,8 +881,13 @@ fun MyMapScreen(
                             }
                         }
 
-                        // 初始化 WebSettings、開啟第一方與第三方 Cookie，並取得移除 `; wv` 後的乾淨 Auth UA
-                        val sanitizedAuthUa = MyMapWebViewClient.configureWebView(this)
+                        // Phase 9：先依 Google Session Cookie 決定初始網址，再初始化 WebSettings 與初始 UA 階段
+                        // （已登入 → DESKTOP_EDITOR + 我的地圖；未登入 → AUTH_CLEAN_CHROME + Google 登入頁）
+                        val initialUrl = MyMapWebViewClient.resolveInitialLoadUrl()
+                        val uaConfig = MyMapWebViewClient.configureWebView(this)
+                        uaMode = uaConfig.initialMode
+                        currentUrl = initialUrl
+                        webViewCreatedTimestampMs = SystemClock.elapsedRealtime()
 
                         // Phase 5：註冊 setDownloadListener 支援 KML / KMZ 匯出與檔案下載
                         // 同步讀取 CookieManager Cookie 與目前的 User-Agent，透過 DownloadManager 下載至系統 DIRECTORY_DOWNLOADS
@@ -823,6 +925,7 @@ fun MyMapScreen(
                             },
                             onInspectModeChangedCallback = { inspect ->
                                 isInspectMode = inspect
+                                WebView.setWebContentsDebuggingEnabled(inspect)
                             },
                             onActiveToolChangedCallback = { toolName ->
                                 isAddMarkerMode = (toolName == "addMarker")
@@ -849,12 +952,42 @@ fun MyMapScreen(
                                         Toast.LENGTH_SHORT
                                     ).show()
                                 }
+                            },
+                            onExternalNavigationRequestedCallback = { targetUrl, contextJson ->
+                                val navContext = MapExportAndIntentHelper.parseNavigationContextJson(
+                                    rawEvaluateJsResult = contextJson,
+                                    fallbackUrl = currentUrl
+                                )
+                                val cleanTargetUrl = targetUrl?.trim().orEmpty()
+                                val lowerTarget = cleanTargetUrl.lowercase(Locale.ROOT)
+                                if (cleanTargetUrl.isNotEmpty() &&
+                                    (MapExportAndIntentHelper.isExternalGoogleMapsUrl(cleanTargetUrl) ||
+                                        lowerTarget.startsWith("intent:") ||
+                                        lowerTarget.startsWith("geo:") ||
+                                        lowerTarget.startsWith("google.navigation:") ||
+                                        lowerTarget.startsWith("google.streetview:"))
+                                ) {
+                                    MapExportAndIntentHelper.openExternalMapsUrlInGoogleMapsApp(
+                                        context = ctx,
+                                        rawUrl = cleanTargetUrl,
+                                        navContext = navContext
+                                    )
+                                } else {
+                                    MapExportAndIntentHelper.launchGoogleMapsApp(
+                                        context = ctx,
+                                        mode = GoogleMapsLaunchMode.NAVIGATION,
+                                        navContext = navContext,
+                                        fallbackGps = currentGpsCoordinates
+                                    )
+                                }
                             }
                         )
                         addJavascriptInterface(jsBridge, MyMapJsBridge.BRIDGE_NAME)
 
                         webViewClient = MyMapWebViewClient(
-                            sanitizedAuthUserAgent = sanitizedAuthUa,
+                            sanitizedAuthUserAgent = uaConfig.sanitizedAuthUa,
+                            desktopUserAgent = uaConfig.desktopUa,
+                            initialUaMode = uaConfig.initialMode,
                             onPageLoadingChanged = { loading ->
                                 isLoading = loading
                                 canGoBack = this.canGoBack()
@@ -927,10 +1060,118 @@ fun MyMapScreen(
                                 super.onGeolocationPermissionsHidePrompt()
                                 pendingGeolocationRequest = null
                             }
+
+                            /**
+                             * Phase 11：攔截 `<a target="_blank">` 或 `window.open(...)` 開啟的新視窗請求：
+                             * 建立暫時性隱藏 WebView 擷取目標 URL，若為外部 Google Maps 導航連結或外部協定，
+                             * 立即交由官方 Google Maps App 開啟；若為一般站內網頁，改由主 WebView 載入並銷毀暫時視窗。
+                             */
+                            override fun onCreateWindow(
+                                view: WebView?,
+                                isDialog: Boolean,
+                                isUserGesture: Boolean,
+                                resultMsg: Message?
+                            ): Boolean {
+                                val hostView = view ?: return false
+                                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                                val hostContext = hostView.context
+
+                                val tempWebView = WebView(hostContext).apply {
+                                    settings.javaScriptEnabled = true
+                                }
+                                var handled = false
+                                val cleanupHandler = Handler(Looper.getMainLooper())
+
+                                fun disposeTempWebView() {
+                                    cleanupHandler.removeCallbacksAndMessages(null)
+                                    try {
+                                        tempWebView.stopLoading()
+                                        tempWebView.destroy()
+                                    } catch (_: Throwable) {
+                                    }
+                                }
+
+                                cleanupHandler.postDelayed({
+                                    if (!handled) {
+                                        handled = true
+                                        disposeTempWebView()
+                                    }
+                                }, 6_000L)
+
+                                fun handleCapturedWindowUrl(rawUrl: String?): Boolean {
+                                    val targetUrl = rawUrl?.trim().orEmpty()
+                                    if (targetUrl.isEmpty() ||
+                                        targetUrl.equals("about:blank", ignoreCase = true)
+                                    ) {
+                                        return false
+                                    }
+                                    if (handled) return true
+                                    handled = true
+
+                                    val lower = targetUrl.lowercase(Locale.ROOT)
+                                    val isHttp = lower.startsWith("http://") || lower.startsWith("https://")
+                                    if (!isHttp || MapExportAndIntentHelper.isExternalGoogleMapsUrl(targetUrl)) {
+                                        if (lower.startsWith("intent:") ||
+                                            MapExportAndIntentHelper.isExternalGoogleMapsUrl(targetUrl)
+                                        ) {
+                                            MapExportAndIntentHelper.openExternalMapsUrlInGoogleMapsApp(
+                                                context = hostContext,
+                                                rawUrl = targetUrl
+                                            )
+                                        } else {
+                                            try {
+                                                val intent = Intent(
+                                                    Intent.ACTION_VIEW,
+                                                    Uri.parse(targetUrl)
+                                                ).apply {
+                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                hostContext.startActivity(intent)
+                                            } catch (_: Exception) {
+                                            }
+                                        }
+                                    } else {
+                                        MyMapWebViewClient.loadUrlWithLockedUa(hostView, targetUrl)
+                                    }
+
+                                    cleanupHandler.post { disposeTempWebView() }
+                                    return true
+                                }
+
+                                tempWebView.webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(
+                                        tempView: WebView,
+                                        request: WebResourceRequest
+                                    ): Boolean {
+                                        return handleCapturedWindowUrl(request.url?.toString())
+                                    }
+
+                                    @Suppress("OVERRIDE_DEPRECATION")
+                                    override fun shouldOverrideUrlLoading(
+                                        tempView: WebView?,
+                                        url: String?
+                                    ): Boolean {
+                                        return handleCapturedWindowUrl(url)
+                                    }
+
+                                    override fun onPageStarted(
+                                        tempView: WebView?,
+                                        url: String?,
+                                        favicon: Bitmap?
+                                    ) {
+                                        super.onPageStarted(tempView, url, favicon)
+                                        handleCapturedWindowUrl(url)
+                                    }
+                                }
+
+                                transport.webView = tempWebView
+                                resultMsg.sendToTarget()
+                                return true
+                            }
                         }
 
                         webViewRef = this
-                        loadUrl(MyMapWebViewClient.MY_MAPS_HOME_URL)
+                        loadUrl(initialUrl)
                     }
                 },
                 update = { view ->
@@ -1052,7 +1293,7 @@ fun MyMapScreen(
                                 onClick = {
                                     isOffline = !MyMapWebViewClient.isNetworkAvailable(context)
                                     webError = null
-                                    webViewRef?.reload()
+                                    reloadOrRecover()
                                 },
                                 shape = RoundedCornerShape(8.dp)
                             ) {
@@ -1492,6 +1733,67 @@ private fun TopStatusHeader(
                     imageVector = Icons.Default.Refresh,
                     contentDescription = "重新整理",
                     tint = Color.White
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Phase 8：Google 帳號頁面「🔄 重整登入狀態 / 切換相容模式」輔助橫幅
+ */
+@Composable
+private fun AuthCompatibilityBanner(
+    currentProfile: MyMapWebViewClient.AuthUaProfile,
+    isRejectedUrl: Boolean,
+    onResetAuthAndSwitchProfile: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = if (isRejectedUrl) Color(0xFFFEF3C7) else Color(0xFFEFF6FF),
+        contentColor = if (isRejectedUrl) Color(0xFF78350F) else Color(0xFF1E3A8A)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isRejectedUrl) {
+                        "⚠️ 偵測到登入流程受阻：請點擊右側按鈕切換相容模式重試"
+                    } else {
+                        "🔐 Google 帳號登入頁（目前：${currentProfile.displayName}）"
+                    },
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isRejectedUrl) Color(0xFF92400E) else Color(0xFF1E40AF)
+                )
+                Text(
+                    text = "若無法順利輸入密碼或驗證，可一鍵清除舊登入 Cookie 並切換行動瀏覽器相容設定",
+                    fontSize = 10.sp,
+                    color = if (isRejectedUrl) Color(0xFFB45309) else Color(0xFF3B82F6),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Button(
+                onClick = onResetAuthAndSwitchProfile,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "🔄 清除登入快取並重試（切換相容模式）",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }

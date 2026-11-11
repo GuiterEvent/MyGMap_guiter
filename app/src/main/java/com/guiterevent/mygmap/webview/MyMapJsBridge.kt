@@ -71,7 +71,8 @@ class MyMapJsBridge(
     private val onMobileModeChangedCallback: (isMobileMode: Boolean) -> Unit = {},
     private val onInspectModeChangedCallback: (isInspectMode: Boolean) -> Unit = {},
     private val onActiveToolChangedCallback: (toolName: String) -> Unit = {},
-    private val onGpsPinStatusCallback: (status: GpsPinStatusInfo) -> Unit = {}
+    private val onGpsPinStatusCallback: (status: GpsPinStatusInfo) -> Unit = {},
+    private val onExternalNavigationRequestedCallback: (targetUrl: String?, contextJson: String?) -> Unit = { _, _ -> }
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -286,6 +287,18 @@ class MyMapJsBridge(
         val parsed = parseGpsPinStatusInfo(statusJson)
         mainHandler.post {
             onGpsPinStatusCallback(parsed)
+        }
+    }
+
+    /**
+     * Phase 11：由 `inject_script.js` 呼叫（例如攔截 `window.open` 或氣泡窗「導航 / 規劃路線」按鈕點擊），
+     * 請求 Android 原生層開啟官方 Google Maps App 導航或外部地圖連結。
+     */
+    @JavascriptInterface
+    fun onExternalNavigationRequested(targetUrl: String?, contextJson: String?) {
+        Log.i(TAG, "onExternalNavigationRequested -> targetUrl=$targetUrl")
+        mainHandler.post {
+            onExternalNavigationRequestedCallback(targetUrl, contextJson)
         }
     }
 }
