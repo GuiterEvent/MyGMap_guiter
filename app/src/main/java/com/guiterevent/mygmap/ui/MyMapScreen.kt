@@ -1291,7 +1291,9 @@ fun MyMapScreen(
                             mid = MapExportAndIntentHelper.extractMidFromUrl(currentUrl).orEmpty(),
                             selectedPinTitle = pin.title,
                             selectedPinLat = pin.lat,
-                            selectedPinLng = pin.lng
+                            selectedPinLng = pin.lng,
+                            placeUrl = pin.placeUrl,
+                            directionsUrl = pin.directionsUrl
                         )
                     }
                     SelectedPinBottomCard(
@@ -2059,7 +2061,7 @@ private fun SelectedPinBottomCard(
         LocationHelper.isValidLatLng(pinInfo.lat, pinInfo.lng)
     val coordDisplay = pinInfo.coordinates.trim().ifBlank {
         if (hasValidCoords) {
-            String.format(Locale.US, "%.6f, %.6f", pinInfo.lat!!, pinInfo.lng!!)
+            "${MapExportAndIntentHelper.formatHighPrecisionCoord(pinInfo.lat!!)}, ${MapExportAndIntentHelper.formatHighPrecisionCoord(pinInfo.lng!!)}"
         } else {
             ""
         }

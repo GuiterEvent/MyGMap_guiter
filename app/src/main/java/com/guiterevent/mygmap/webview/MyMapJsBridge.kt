@@ -59,7 +59,7 @@ data class GpsPinStatusInfo(
 )
 
 /**
- * Phase 12：儲存從 `inject_script.js` 氣泡窗偵測 (`extractSelectedPinUiState`) 回報的目前選取 POI 狀態。
+ * Phase 12 / Phase 13：儲存從 `inject_script.js` 氣泡窗偵測 (`extractSelectedPinUiState`) 回報的目前選取 POI 狀態。
  */
 data class SelectedPinInfo(
     val visible: Boolean = false,
@@ -70,7 +70,9 @@ data class SelectedPinInfo(
     val lat: Double? = null,
     val lng: Double? = null,
     val isEditMode: Boolean = false,
-    val photoUrls: List<String> = emptyList()
+    val photoUrls: List<String> = emptyList(),
+    val placeUrl: String = "",
+    val directionsUrl: String = ""
 )
 
 /**
@@ -236,7 +238,9 @@ class MyMapJsBridge(
                     lng = safeOptJsonDouble(json, jsonStr, "lng"),
                     isEditMode = (json.has("isEditMode") && json.optBoolean("isEditMode", false)) ||
                         extractJsonBooleanField(jsonStr, "isEditMode"),
-                    photoUrls = safeOptJsonStringArray(json, jsonStr, "photoUrls")
+                    photoUrls = safeOptJsonStringArray(json, jsonStr, "photoUrls"),
+                    placeUrl = safeOptJsonString(json, jsonStr, "placeUrl"),
+                    directionsUrl = safeOptJsonString(json, jsonStr, "directionsUrl")
                 )
             } catch (_: Throwable) {
                 val visible = extractJsonBooleanField(jsonStr, "visible")
@@ -252,7 +256,9 @@ class MyMapJsBridge(
                     lat = extractJsonDoubleField(jsonStr, "lat"),
                     lng = extractJsonDoubleField(jsonStr, "lng"),
                     isEditMode = extractJsonBooleanField(jsonStr, "isEditMode"),
-                    photoUrls = extractJsonStringArrayField(jsonStr, "photoUrls")
+                    photoUrls = extractJsonStringArrayField(jsonStr, "photoUrls"),
+                    placeUrl = extractJsonStringField(jsonStr, "placeUrl"),
+                    directionsUrl = extractJsonStringField(jsonStr, "directionsUrl")
                 )
             }
         }
@@ -309,6 +315,7 @@ class MyMapJsBridge(
             val match = regex.find(json) ?: return ""
             return match.groupValues[1]
                 .replace("\\\"", "\"")
+                .replace("\\/", "/")
                 .replace("\\n", "\n")
                 .replace("\\\\", "\\")
         }

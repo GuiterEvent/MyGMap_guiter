@@ -180,6 +180,14 @@ MyGMap_guiter/
        - 透過 `inject_script.js` 的 `MutationObserver` 即時偵測點選 POI 後展開的氣泡窗，擷取**標題、詳細地址/備註、評分、經緯度座標**與是否處於氣泡窗編輯模式，並回報給 `AndroidBridge.onSelectedPinStateChanged(json)`。
        - 當選取 POI 且非氣泡窗編輯狀態時，於 `BottomActionBar` 上方平滑彈出簡潔美觀的原生 **`SelectedPinBottomCard`**：顯示完整不裁字的 POI 名稱、摘要、可點擊複製的座標膠囊，以及好按的圓角動作按鈕（「🧭 導航」、「🏙️ 街景」、「✏️ 編輯」、「🗺️ 在 Maps 開啟」、「✕ 關閉」）。
        - 點擊「✏️ 編輯」時自動呼叫 `WebViewInjector.triggerInfoWindowEdit(webView)` 開啟網頁編輯表單並暫時收合原生快捷卡（避免遮擋輸入）；點擊空白處關閉氣泡窗時同步隱藏原生卡片，並自動協調右下角 GPS FAB 的位置與間距避免重疊。
+- [x] **Phase 13：修正點選 Maps / 導航時地點微幅偏移問題（優先使用「在 Google 地圖檢視」官方連結與 `!3d!4d` 精確圖釘座標）**
+  - **問題根因與修復重點**：
+    1. **URL 座標解析誤抓 `/@lat,lng`（畫面中心）且忽略 `!3dLAT!4dLNG`（真實圖釘座標）(`inject_script.js` & `MapExportAndIntentHelper.kt`)**：
+       - 在 Google Maps 網址（如 `https://www.google.com/maps/place/.../@camLat,camLng,16z/data=...!3dPinLat!4dPinLng`）中，`/@lat,lng` 是地圖**攝影機視角中心**（常偏離真實店家），而 **`!3dLAT!4dLNG`** 才是真實地標座標。原本的 `parseLatLngPairFromString()` 與 `extractLatLngFromUrl()` 會先抓到前面的 `/@lat,lng` 就直接回傳，造成座標偏移！
+       - **對策**：兩邊同步新增優先序：**`!3d...!4d...` (最後一組實體座標) > 明確查詢參數 (`destination=` / `daddr=` / `q=` / `query=` / `ll=` / `center=`) > `/@lat,lng`（僅作為最後備援）**。
+    2. **擷取並優先使用氣泡窗官方「在 Google 地圖檢視」(`placeUrl`) 與路線連結 (`directionsUrl`) (`inject_script.js`、`MyMapJsBridge.kt`、`MapExportAndIntentHelper.kt`、`MyMapScreen.kt`)**：
+       - Google 我的地圖氣泡窗底部顯示的純文字經緯度常經過五位小數四捨五入或對應自訂標記草點，而網頁內的藍色 **`在「Google 地圖」檢視`** 連結 (`a[href]` 含 `/maps/place/`、`cid=`、`ftid=`、`!3d!4d`) 才直接綁定了 Google 地圖真實地點實體（這就是為何純網頁版點擊會準確落在左側真實地標 `Bogen Hostel as`）。
+       - **對策**：在 `extractSelectedPinUiState()` 與 `extractNavigationContext()` 擷取 `placeUrl` 與 `directionsUrl` 並新增至 `SelectedPinInfo` 與 `MapNavigationContext`；在 `SelectedPinBottomCard` 點擊「🗺️ 在 Maps 開啟 (`PLACE_PIN`)」時若存在 `placeUrl` 直接以 `com.google.android.apps.maps` 開啟該官方連結（1:1 同純網頁版體驗），點擊「🧭 導航 (`NAVIGATION`)」時優先採用 `directionsUrl`、`placeUrl` 內的 `!3d!4d` 或公式地標實體（含高精度 `%.7f` 不再被五位數截斷），徹底消除偏移。
 
 ---
 
@@ -542,6 +550,47 @@ MyGMap_guiter/
   - `build.bat`：執行 `debug` / `release` / `check` 編譯 APK 前自動計算下一版號 (`PATCH + 1`、`VERSION_CODE + 1`) 並傳入 Gradle 寫入 APK；**僅於 `gradlew.bat` 回傳成功 (`exit code == 0`) 且確認 APK 產出後**才寫回 `version.properties`（失敗或僅執行 `test` / `clean` 時不跳號；亦支援 `--no-bump` 選項），並同步產出 `dist\MyGMap-debug.apk` 與 `dist\MyGMap-debug-v<版本>.apk`。
   - `app/src/main/java/com/guiterevent/mygmap/ui/BottomActionBar.kt`：於底部「⚙️ 模式」選單最下方顯示目前 App 版本 `版本：v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})`。
   - `app/src/main/assets/inject_style.css` & `app/src/main/assets/inject_script.js`：於 `body.mygmap-mobile-mode` 下以 `opacity: 0; pointer-events: none;` 隱藏右上角多餘之 Google 帳號頭像/九宮格 (`google-account-widget`) 與桌面版復原/重做浮動白條 (`editor-toolbar`)，釋放完整地圖畫布同時保留底部原生工具列對插針/復原/重做的正常觸發。
+
+### Phase 13 交接紀錄
+- **狀態**：已完成 (`[x]`)
+- **已建立/修改檔案**：
+  - `app/src/main/assets/inject_script.js`：
+    - 實作 `extractExactCoordsFromMapsUrl(rawUrl)`：採完全一致的優先順序解析真實座標：
+      1. 第一順位（最高精度真實圖釘）：`!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)`（取最後一組最靠近實體的 `!3d...!4d...`）。
+      2. 第二順位（明確目標參數）：`destination=`、`daddr=`、`query=`、`q=`、`ll=`、`sll=`、`cbll=`、`viewpoint=`、`center=`。
+      3. 第三順位（最後備援）：路徑中的 `/@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)`（畫面視角中心）。
+    - 實作 `formatCoordNumber(num)` 與 `formatCoordDisplay(lat, lng)`：保留最多 7 位小數並去除無效尾零，防止強制四捨五入截斷座標。
+    - 強化 `parseLatLngPairFromString(rawStr)`：遇到包含 `!3d`、`http` 或 `/maps` 網址時優先委派 `extractExactCoordsFromMapsUrl` 解析真實座標。
+    - 實作 `findInfoWindowActionUrls(container)`：遍歷氣泡窗內所有 `a[href]`，解析出官方路線連結 `directionsUrl`（`/maps/dir`、`daddr=`、`destination=`）與官方地點連結 `placeUrl`（包含「Google 地圖」、「View in Google Maps」、「檢視」文字，或含有 `/maps/place`、`cid=`、`ftid=`、`ludocid=`、`maps.google.`、`maps.app.goo.gl`、`goo.gl/maps`，並排除 `/maps/dir` 與 `/maps/d/`）。
+    - 改寫 `extractPinCoordinatesFromContainer(container)`：優先從 `placeUrl` 與 `directionsUrl` 提取真實 `!3d!4d`（或明確查詢參數）座標；若官方連結僅含 `cid=`/`ftid=` 而無 `!3d!4d`，再檢查 `data-lat`/`data-lng`，最後才退回 `container.innerText`（防止畫面視角 `/@lat,lng` 蓋過正確座標）。
+    - 在 `extractSelectedPinUiState()` 與 `extractNavigationContext()` 的回傳 JSON 中新增 `placeUrl` 與 `directionsUrl` 欄位，並將 `extractExactCoordsFromMapsUrl` 與 `findInfoWindowActionUrls` 曝露在 `window.MyGMapHelper`。
+  - `app/src/main/java/com/guiterevent/mygmap/webview/MyMapJsBridge.kt`：
+    - 在 `SelectedPinInfo` 新增 `val placeUrl: String = ""` 與 `val directionsUrl: String = ""`。
+    - 在 `parseSelectedPinInfo`（含 Android JSONObject 與純 JVM Regex Fallback）完整解析 `placeUrl` 與 `directionsUrl`，並強化 `extractJsonStringField` 支援 unescape `\/`。
+  - `app/src/main/java/com/guiterevent/mygmap/webview/MapExportAndIntentHelper.kt`：
+    - 在 `MapNavigationContext` 新增 `val placeUrl: String = ""` 與 `val directionsUrl: String = ""`，並於 `parseNavigationContextJson`（JSONObject 及 JVM Fallback）解析這兩個欄位。
+    - 新增高精度格式化工具 `formatHighPrecisionCoord` 與 `formatHighPrecisionLatLng`（最多 7 位小數並去除尾零）。
+    - 改寫 `extractLatLngFromUrl(url)`：實作與 JS 100% 一致的優先解析順序：(1) `!3dLAT!4dLNG`（取最後一組）；(2) 明確參數 `destination=`/`daddr=`/`query=`/`q=`/`ll=`/`sll=`/`cbll=`/`viewpoint=`/`center=`；(3) 畫面視角中心 `/@lat,lng`。
+    - 新增 `extractExactPinCoordsFromUrl(url)` 與 `extractPlaceNameFromMapsUrl(url)`。
+    - 修改 `resolveGoogleMapsTargetUris`：
+      - `PLACE_PIN`（「🗺️ 在 Maps 開啟」）：若具備有效 `navContext.placeUrl` 且無手動輸入，直接以 `placeUrl` 作為 targetUri 開啟（以 `setPackage(GOOGLE_MAPS_PACKAGE)` 直接開啟官方真實地點頁面，1:1 對齊純網頁版「在 Google 地圖檢視」，不再轉成偏移的 `geo:lat,lng`）。
+      - `NAVIGATION`（「🧭 導航」）：若具備 `directionsUrl` 優先從中提取精確圖釘或目的地；若具備 `placeUrl` 優先提取 `!3d!4d` 或明確座標參數，次之使用 `/maps/place/<地點名稱>` 官方地標實體名稱確保精準對齊，保底退回 `bestCoords`/`bestQuery`。
+      - `SMART_OPEN`：有選取圖釘且具備 `placeUrl` 時亦優先以 `placeUrl` 開啟。
+  - `app/src/main/java/com/guiterevent/mygmap/ui/MyMapScreen.kt`：
+    - 在 `SelectedPinBottomCard` 的 `buildNavContext` 中傳入 `placeUrl = pin.placeUrl` 與 `directionsUrl = pin.directionsUrl`。
+    - 在座標備援顯示中使用 `formatHighPrecisionCoord` 避免裁切高位數小數點。
+  - `app/src/test/java/com/guiterevent/mygmap/MapExportAndIntentHelperTest.kt`：
+    - 新增單元測試驗證 `extractLatLngFromUrl` 在同時存在 `/@68.51358,17.01783,16z` 與 `!3d68.514123!4d17.012345` 時精準回傳 `!3d!4d` 座標而非攝影機中心。
+    - 新增單元測試驗證 `resolveGoogleMapsTargetUris(PLACE_PIN, ...)` 在具備 `placeUrl`（含 `/maps/place/...` 與 `cid=`）時優先回傳 `placeUrl`。
+    - 新增單元測試驗證 `resolveGoogleMapsTargetUris(NAVIGATION, ...)` 優先採用 `placeUrl` / `directionsUrl` 內的精確 `!3d!4d` 座標。
+    - 新增單元測試驗證 `parseNavigationContextJson` 正確解析 `placeUrl` 與 `directionsUrl`。
+  - `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`：
+    - 更新 `parseSelectedPinInfo` 單元測試驗證 `placeUrl` 與 `directionsUrl` 欄位解析。
+    - 擴充資產測試驗證 `extractExactCoordsFromMapsUrl`、`findInfoWindowActionUrls` 與 `!3d!4d` 規則。
+- **驗證結果與注意事項**：
+  - 已執行 `node --check app/src/main/assets/inject_script.js` 驗證 JS 語法正確（exit code 0）。
+  - 已透過 node 測試腳本實測 `extractExactCoordsFromMapsUrl` 與 `findInfoWindowActionUrls` 邏輯無誤。
+  - 依指示**未執行 `build.bat` 或 `gradlew` 編譯指令**，由使用者自行手動編譯與實機驗證。
 
 
 

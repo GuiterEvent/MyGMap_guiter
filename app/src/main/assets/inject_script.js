@@ -1900,10 +1900,86 @@
 
     /**
      * ========================================================================
-     * 9. Phase 5：提取目前網頁的地圖 ID (mid)、地圖中心 (ll)、選取圖釘與搜尋框座標
+     * 9. Phase 5 / Phase 13：提取目前網頁的地圖 ID (mid)、地圖中心 (ll)、選取圖釘與搜尋框座標
      *    供「🗺️ 在 Google Maps App 開啟 (導航 / 街景 / 雲端地圖)」使用
      * ========================================================================
      */
+
+    /**
+     * Phase 13：從 Google Maps 網址中擷取真實圖釘高精準度座標
+     * 優先順序：
+     * 1. 第一順位（最高精度真實圖釘）：!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)（若有多組取最後一組）
+     * 2. 第二順位（明確目標參數）：destination=, daddr=, query=, q=, ll=, sll=, cbll=, viewpoint=, center=
+     * 3. 第三順位（最後備援）：路徑中的 /@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)（畫面視角中心）
+     */
+    function extractExactCoordsFromMapsUrl(rawUrl) {
+        if (!rawUrl) return null;
+        var decoded = String(rawUrl).trim();
+        try {
+            if (decoded.indexOf('%') !== -1) {
+                decoded = decodeURIComponent(decoded);
+            }
+        } catch (_e) {
+            decoded = decoded.replace(/%2C/gi, ',');
+        }
+
+        // 1. 第一順位（最高精度真實圖釘）：擷取 !3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)（若有多組取最後一組）
+        var pinRegex = /!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/g;
+        var pinMatch = null;
+        var lastPinMatch = null;
+        while ((pinMatch = pinRegex.exec(decoded)) !== null) {
+            lastPinMatch = pinMatch;
+        }
+        if (lastPinMatch) {
+            var pLat = parseFloat(lastPinMatch[1]);
+            var pLng = parseFloat(lastPinMatch[2]);
+            if (!isNaN(pLat) && !isNaN(pLng) && pLat >= -90 && pLat <= 90 && pLng >= -180 && pLng <= 180 && !(pLat === 0 && pLng === 0)) {
+                return { lat: pLat, lng: pLng, isExactPin: true, isCameraCenter: false };
+            }
+        }
+
+        // 2. 第二順位（明確目標參數）：destination=, daddr=, query=, q=, ll=, sll=, cbll=, viewpoint=, center=
+        var queryParamRegex = /[?&](?:destination|daddr|query|q|ll|sll|cbll|viewpoint|center)=(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)/i;
+        var qMatch = decoded.match(queryParamRegex);
+        if (qMatch) {
+            var qLat = parseFloat(qMatch[1]);
+            var qLng = parseFloat(qMatch[2]);
+            if (!isNaN(qLat) && !isNaN(qLng) && qLat >= -90 && qLat <= 90 && qLng >= -180 && qLng <= 180 && !(qLat === 0 && qLng === 0)) {
+                return { lat: qLat, lng: qLng, isExactPin: false, isCameraCenter: false };
+            }
+        }
+
+        // 3. 第三順位（最後備援）：路徑中的 /@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)（畫面視角中心）
+        var atMatch = decoded.match(/@(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)/);
+        if (atMatch) {
+            var atLat = parseFloat(atMatch[1]);
+            var atLng = parseFloat(atMatch[2]);
+            if (!isNaN(atLat) && !isNaN(atLng) && atLat >= -90 && atLat <= 90 && atLng >= -180 && atLng <= 180 && !(atLat === 0 && atLng === 0)) {
+                return { lat: atLat, lng: atLng, isExactPin: false, isCameraCenter: true };
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Phase 13：高精度經緯度數字格式化（最多 7 位小數，去除無效尾零）
+     */
+    function formatCoordNumber(num) {
+        if (typeof num !== 'number' || isNaN(num)) return '';
+        var s = num.toFixed(7);
+        if (s.indexOf('.') !== -1) {
+            s = s.replace(/\.?0+$/, '');
+        }
+        return s;
+    }
+
+    function formatCoordDisplay(lat, lng) {
+        if (lat === null || lng === null || typeof lat !== 'number' || typeof lng !== 'number') return '';
+        if (isNaN(lat) || isNaN(lng)) return '';
+        return formatCoordNumber(lat) + ', ' + formatCoordNumber(lng);
+    }
+
     function parseLatLngPairFromString(rawStr) {
         if (!rawStr) return null;
         var decoded = String(rawStr);
@@ -1912,6 +1988,14 @@
                 decoded = decodeURIComponent(decoded);
             }
         } catch (_e) {}
+
+        // 若字串為包含 !3d!4d 或 Google Maps 參數的網址，優先透過 extractExactCoordsFromMapsUrl 擷取真實座標
+        if (decoded.indexOf('!3d') !== -1 || decoded.indexOf('http') !== -1 || decoded.indexOf('/maps') !== -1) {
+            var urlCoords = extractExactCoordsFromMapsUrl(decoded);
+            if (urlCoords) {
+                return { lat: urlCoords.lat, lng: urlCoords.lng };
+            }
+        }
 
         var match = decoded.match(/(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})/);
         if (!match) return null;
@@ -1922,6 +2006,64 @@
         }
         if (lat === 0 && lng === 0) return null;
         return { lat: lat, lng: lng };
+    }
+
+    /**
+     * Phase 13：從氣泡窗中擷取官方「在 Google 地圖檢視 (placeUrl)」與「規劃路線 (directionsUrl)」連結
+     */
+    function findInfoWindowActionUrls(container) {
+        var result = {
+            directionsUrl: '',
+            placeUrl: ''
+        };
+        if (!container || !container.querySelectorAll) return result;
+        var links = container.querySelectorAll('a[href]');
+        for (var i = 0; i < links.length; i++) {
+            var a = links[i];
+            var href = (a.getAttribute('href') || '').trim();
+            if (!href || href.indexOf('javascript:') === 0 || href === '#') continue;
+            var text = (a.innerText || a.textContent || '').trim();
+            var lowerHref = href.toLowerCase();
+
+            // 排除 /maps/d/ 內部地圖連結與帳號登入網址
+            if (lowerHref.indexOf('/maps/d/') !== -1 ||
+                lowerHref.indexOf('/maps/d?') !== -1 ||
+                lowerHref.indexOf('accounts.google.') !== -1) {
+                continue;
+            }
+
+            // directionsUrl 判斷：符合 /maps/dir、daddr= 或 destination=
+            if (!result.directionsUrl) {
+                if (
+                    lowerHref.indexOf('/maps/dir') !== -1 ||
+                    lowerHref.indexOf('daddr=') !== -1 ||
+                    lowerHref.indexOf('destination=') !== -1
+                ) {
+                    result.directionsUrl = href;
+                }
+            }
+
+            // placeUrl 判斷：文字包含 Google 地圖 / View in Google Maps / 檢視，或網址包含 /maps/place、cid=、ftid=、ludocid=、maps.google.、maps.app.goo.gl、goo.gl/maps（排除 /maps/dir）
+            if (!result.placeUrl) {
+                var isDirLink = lowerHref.indexOf('/maps/dir') !== -1 ||
+                    lowerHref.indexOf('daddr=') !== -1 ||
+                    lowerHref.indexOf('destination=') !== -1;
+                if (!isDirLink) {
+                    var textMatches = /Google\s*地圖|View in Google Maps|檢視/i.test(text);
+                    var urlMatches = lowerHref.indexOf('/maps/place') !== -1 ||
+                        lowerHref.indexOf('cid=') !== -1 ||
+                        lowerHref.indexOf('ftid=') !== -1 ||
+                        lowerHref.indexOf('ludocid=') !== -1 ||
+                        lowerHref.indexOf('maps.google.') !== -1 ||
+                        lowerHref.indexOf('maps.app.goo.gl') !== -1 ||
+                        lowerHref.indexOf('goo.gl/maps') !== -1;
+                    if (textMatches || urlMatches) {
+                        result.placeUrl = href;
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     /**
@@ -2034,40 +2176,30 @@
             }
         }
 
-        // 2. 從目前展開的圖釘氣泡窗 (#map-infowindow-container / .gm-style-iw / [role="dialog"] / 詳情卡片) 提取標題與座標
+        // 2. 從目前展開的圖釘氣泡窗 (#map-infowindow-container / .gm-style-iw / [role="dialog"] / 詳情卡片) 提取標題、座標與官方連結
         var pinContainers = findActivePinContainers();
         var selectedPinTitle = extractPinTitleFromContainers(pinContainers);
         var selectedPinLat = null;
         var selectedPinLng = null;
+        var pinPlaceUrl = '';
+        var pinDirectionsUrl = '';
 
         for (var cIdx = 0; cIdx < pinContainers.length; cIdx++) {
             var container = pinContainers[cIdx];
-            var pinCoordPair = null;
+            var cActionUrls = findInfoWindowActionUrls(container);
+            if (!pinPlaceUrl && cActionUrls.placeUrl) {
+                pinPlaceUrl = cActionUrls.placeUrl;
+            }
+            if (!pinDirectionsUrl && cActionUrls.directionsUrl) {
+                pinDirectionsUrl = cActionUrls.directionsUrl;
+            }
 
-            // 先檢查氣泡窗或詳情卡內的 <a> 連結（如 /maps/dir 連結內常直接帶有座標）
-            var links = container.querySelectorAll ? container.querySelectorAll('a[href]') : [];
-            for (var i = 0; i < links.length; i++) {
-                var linkPair = parseLatLngPairFromString(links[i].getAttribute('href') || '');
-                if (linkPair) {
-                    pinCoordPair = linkPair;
-                    break;
+            if (selectedPinLat === null || selectedPinLng === null) {
+                var pinCoordPair = extractPinCoordinatesFromContainer(container);
+                if (pinCoordPair) {
+                    selectedPinLat = pinCoordPair.lat;
+                    selectedPinLng = pinCoordPair.lng;
                 }
-            }
-            if (!pinCoordPair) {
-                var dataLat = container.getAttribute && container.getAttribute('data-lat');
-                var dataLng = container.getAttribute && container.getAttribute('data-lng');
-                if (dataLat && dataLng) {
-                    pinCoordPair = parseLatLngPairFromString(dataLat + ',' + dataLng);
-                }
-            }
-            if (!pinCoordPair) {
-                var infoText = (container.innerText || container.textContent || '');
-                pinCoordPair = parseLatLngPairFromString(infoText);
-            }
-            if (pinCoordPair) {
-                selectedPinLat = pinCoordPair.lat;
-                selectedPinLng = pinCoordPair.lng;
-                break;
             }
         }
 
@@ -2095,7 +2227,9 @@
             selectedPinLng: selectedPinLng,
             searchBoxText: searchBoxText,
             searchBoxLat: searchBoxLat,
-            searchBoxLng: searchBoxLng
+            searchBoxLng: searchBoxLng,
+            placeUrl: pinPlaceUrl,
+            directionsUrl: pinDirectionsUrl
         };
     }
 
@@ -2338,19 +2472,53 @@
 
     function extractPinCoordinatesFromContainer(container) {
         if (!container) return null;
+        var actionUrls = findInfoWindowActionUrls(container);
+        var candidateUrls = [];
+        if (actionUrls.placeUrl) candidateUrls.push(actionUrls.placeUrl);
+        if (actionUrls.directionsUrl) candidateUrls.push(actionUrls.directionsUrl);
+
         var links = container.querySelectorAll ? container.querySelectorAll('a[href]') : [];
         for (var i = 0; i < links.length; i++) {
-            var linkPair = parseLatLngPairFromString(links[i].getAttribute('href') || '');
-            if (linkPair) return linkPair;
+            var href = (links[i].getAttribute('href') || '').trim();
+            if (href && candidateUrls.indexOf(href) === -1) {
+                candidateUrls.push(href);
+            }
         }
+
+        var cameraFallback = null;
+
+        // 1. 優先從 placeUrl 與 directionsUrl 透過 extractExactCoordsFromMapsUrl 提取真實 !3d!4d（或明確查詢參數）
+        for (var u = 0; u < candidateUrls.length; u++) {
+            var rawU = candidateUrls[u];
+            var exactCoords = extractExactCoordsFromMapsUrl(rawU);
+            if (exactCoords) {
+                if (!exactCoords.isCameraCenter) {
+                    return { lat: exactCoords.lat, lng: exactCoords.lng };
+                } else if (!cameraFallback) {
+                    cameraFallback = { lat: exactCoords.lat, lng: exactCoords.lng };
+                }
+            }
+        }
+
+        // 2. 若官方連結僅含 cid=/ftid= 而無 !3d!4d，再檢查 data-lat / data-lng
         var dataLat = container.getAttribute && container.getAttribute('data-lat');
         var dataLng = container.getAttribute && container.getAttribute('data-lng');
         if (dataLat && dataLng) {
             var dataPair = parseLatLngPairFromString(dataLat + ',' + dataLng);
             if (dataPair) return dataPair;
         }
+
+        // 3. 最後才退回 container.innerText 中的座標文字（避免畫面視角 /@lat,lng 蓋過正確座標）
         var infoText = (container.innerText || container.textContent || '');
-        return parseLatLngPairFromString(infoText);
+        var textPair = parseLatLngPairFromString(infoText);
+        if (textPair) return textPair;
+
+        // 4. 最後備援：畫面視角中心 /@lat,lng
+        if (cameraFallback) {
+            return cameraFallback;
+        }
+
+        return null;
     }
 
     function isBoilerplatePinLine(line, cleanTitle, rating) {
@@ -2661,7 +2829,7 @@
         var lat = coordPair ? coordPair.lat : null;
         var lng = coordPair ? coordPair.lng : null;
         var coordinates = (lat !== null && lng !== null)
-            ? (lat.toFixed(6) + ', ' + lng.toFixed(6))
+            ? formatCoordDisplay(lat, lng)
             : '';
 
         var rating = extractPinRatingFromContainer(container);
@@ -2708,6 +2876,7 @@
         }
 
         var photoUrls = extractPinPhotosFromContainer(container);
+        var actionUrls = findInfoWindowActionUrls(container);
 
         return {
             visible: true,
@@ -2718,7 +2887,9 @@
             lat: lat,
             lng: lng,
             isEditMode: Boolean(isEditMode),
-            photoUrls: photoUrls
+            photoUrls: photoUrls,
+            placeUrl: actionUrls.placeUrl || '',
+            directionsUrl: actionUrls.directionsUrl || ''
         };
     }
 
@@ -2834,6 +3005,12 @@
 
         /** Phase 12：擷取目前選取 POI 氣泡窗顯示狀態與完整資訊 */
         extractSelectedPinUiState: extractSelectedPinUiState,
+
+        /** Phase 13：從 Google Maps 網址中擷取真實圖釘高精準度座標 */
+        extractExactCoordsFromMapsUrl: extractExactCoordsFromMapsUrl,
+
+        /** Phase 13：從氣泡窗中擷取官方「在 Google 地圖檢視 (placeUrl)」與「規劃路線 (directionsUrl)」連結 */
+        findInfoWindowActionUrls: findInfoWindowActionUrls,
 
         /** Phase 12：從原生卡片觸發目前氣泡窗進入編輯模式 */
         triggerInfoWindowEdit: function () {

@@ -130,6 +130,11 @@ class JsBridgeAndAssetsTest {
         assertTrue("CSS must support hiding web InfoWindow in view mode", cssText.contains("mygmap-pin-view-hidden"))
         assertTrue("CSS must support centering edit InfoWindow", cssText.contains("mygmap-pin-editing"))
         assertTrue("JS must define centerEditInfoWindowInViewport", jsText.contains("centerEditInfoWindowInViewport"))
+
+        // Phase 13 required Exact Maps Coordinates Extraction & Action URLs
+        assertTrue("JS must define extractExactCoordsFromMapsUrl", jsText.contains("extractExactCoordsFromMapsUrl"))
+        assertTrue("JS must define findInfoWindowActionUrls", jsText.contains("findInfoWindowActionUrls"))
+        assertTrue("JS extractExactCoordsFromMapsUrl must prioritize !3d!4d pattern", jsText.contains("!3d") && jsText.contains("!4d"))
     }
 
     @Test
@@ -172,7 +177,9 @@ class JsBridgeAndAssetsTest {
               "lat": 25.029654,
               "lng": 121.536210,
               "isEditMode": false,
-              "photoUrls": ["https://lh3.googleusercontent.com/p/photo1", "https://lh3.googleusercontent.com/p/photo2"]
+              "photoUrls": ["https://lh3.googleusercontent.com/p/photo1", "https://lh3.googleusercontent.com/p/photo2"],
+              "placeUrl": "https://www.google.com/maps/place/Bogen+Hostel+as/@68.51358,17.01783,16z/data=!3d68.514123!4d17.012345",
+              "directionsUrl": "https://www.google.com/maps/dir/?api=1&destination=68.514123,17.012345"
             }
         """.trimIndent()
 
@@ -187,6 +194,8 @@ class JsBridgeAndAssetsTest {
         assertFalse(visiblePin.isEditMode)
         assertEquals(2, visiblePin.photoUrls.size)
         assertEquals("https://lh3.googleusercontent.com/p/photo1", visiblePin.photoUrls[0])
+        assertEquals("https://www.google.com/maps/place/Bogen+Hostel+as/@68.51358,17.01783,16z/data=!3d68.514123!4d17.012345", visiblePin.placeUrl)
+        assertEquals("https://www.google.com/maps/dir/?api=1&destination=68.514123,17.012345", visiblePin.directionsUrl)
 
         val editModeJson = """
             {
@@ -207,10 +216,14 @@ class JsBridgeAndAssetsTest {
         assertEquals("編輯中景點", editingPin.title)
         assertNull(editingPin.lat)
         assertNull(editingPin.lng)
+        assertEquals("", editingPin.placeUrl)
+        assertEquals("", editingPin.directionsUrl)
 
         val hiddenPin = MyMapJsBridge.parseSelectedPinInfo("""{"visible": false}""")
         assertFalse(hiddenPin.visible)
         assertEquals("", hiddenPin.title)
+        assertEquals("", hiddenPin.placeUrl)
+        assertEquals("", hiddenPin.directionsUrl)
 
         val blankPin = MyMapJsBridge.parseSelectedPinInfo("")
         assertFalse(blankPin.visible)

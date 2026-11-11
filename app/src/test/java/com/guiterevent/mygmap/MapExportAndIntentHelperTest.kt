@@ -204,4 +204,93 @@ class MapExportAndIntentHelperTest {
         )
         assertNull(MapExportAndIntentHelper.extractDirectionsDestinationFromUrl(null))
     }
+
+    @Test
+    fun `extractLatLngFromUrl prioritizes 3d4d entity pin coordinates over camera center`() {
+        val mixedUrl = "https://www.google.com/maps/place/Bogen+Hostel+as/@68.51358,17.01783,16z/data=!4m14!1m7!3m6!1s0x45dbf34f786:0x123!2sBogen!8m2!3d68.514123!4d17.012345!16s%2Fg%2F11b6"
+        val coords = MapExportAndIntentHelper.extractLatLngFromUrl(mixedUrl)
+        assertNotNull(coords)
+        assertEquals(68.514123, coords!!.latitude, 1e-6)
+        assertEquals(17.012345, coords.longitude, 1e-6)
+    }
+
+    @Test
+    fun `resolveGoogleMapsTargetUris prioritizes placeUrl for PLACE_PIN mode`() {
+        val placeUrl = "https://www.google.com/maps/place/Bogen+Hostel+as/@68.51358,17.01783,16z/data=!3d68.514123!4d17.012345"
+        val ctx = MapNavigationContext(
+            selectedPinTitle = "Bogen Hostel as",
+            selectedPinLat = 68.51358,
+            selectedPinLng = 17.01783,
+            placeUrl = placeUrl
+        )
+
+        val (appUri, browserUrl) = MapExportAndIntentHelper.resolveGoogleMapsTargetUris(
+            mode = GoogleMapsLaunchMode.PLACE_PIN,
+            navContext = ctx
+        )
+        assertEquals(placeUrl, appUri)
+        assertEquals(placeUrl, browserUrl)
+
+        val cidUrl = "https://maps.google.com/?cid=1234567890"
+        val ctxCid = MapNavigationContext(
+            selectedPinTitle = "Bogen Hostel as",
+            placeUrl = cidUrl
+        )
+        val (cidAppUri, cidBrowserUrl) = MapExportAndIntentHelper.resolveGoogleMapsTargetUris(
+            mode = GoogleMapsLaunchMode.PLACE_PIN,
+            navContext = ctxCid
+        )
+        assertEquals(cidUrl, cidAppUri)
+        assertEquals(cidUrl, cidBrowserUrl)
+    }
+
+    @Test
+    fun `resolveGoogleMapsTargetUris prioritizes directionsUrl and placeUrl exact coords for NAVIGATION mode`() {
+        val placeUrl = "https://www.google.com/maps/place/Bogen+Hostel+as/@68.51358,17.01783,16z/data=!3d68.514123!4d17.012345"
+        val ctx = MapNavigationContext(
+            selectedPinTitle = "Bogen Hostel as",
+            selectedPinLat = 68.51358,
+            selectedPinLng = 17.01783,
+            placeUrl = placeUrl
+        )
+
+        val (navAppUri, navBrowserUrl) = MapExportAndIntentHelper.resolveGoogleMapsTargetUris(
+            mode = GoogleMapsLaunchMode.NAVIGATION,
+            navContext = ctx
+        )
+        assertTrue("Navigation should target exact pin latitude 68.514123", navAppUri.contains("68.514123"))
+        assertTrue("Navigation should target exact pin longitude 17.012345", navAppUri.contains("17.012345"))
+        assertTrue(navBrowserUrl.contains("destination=68.514123%2C17.012345") || navBrowserUrl.contains("destination=68.514123,17.012345"))
+
+        val dirUrl = "https://www.google.com/maps/dir/?api=1&destination=68.514999,17.019999"
+        val ctxDir = MapNavigationContext(
+            selectedPinTitle = "Bogen Hostel as",
+            directionsUrl = dirUrl,
+            placeUrl = placeUrl
+        )
+        val (dirAppUri, _) = MapExportAndIntentHelper.resolveGoogleMapsTargetUris(
+            mode = GoogleMapsLaunchMode.NAVIGATION,
+            navContext = ctxDir
+        )
+        assertTrue(dirAppUri.contains("68.514999"))
+        assertTrue(dirAppUri.contains("17.019999"))
+    }
+
+    @Test
+    fun `parseNavigationContextJson parses placeUrl and directionsUrl`() {
+        val json = """
+            {
+              "pageUrl": "https://www.google.com/maps/d/edit?mid=123",
+              "mid": "123",
+              "selectedPinTitle": "Bogen Hostel as",
+              "selectedPinLat": 68.514123,
+              "selectedPinLng": 17.012345,
+              "placeUrl": "https://www.google.com/maps/place/Bogen+Hostel+as/@68.51358,17.01783,16z/data=!3d68.514123!4d17.012345",
+              "directionsUrl": "https://www.google.com/maps/dir/?api=1&destination=68.514123,17.012345"
+            }
+        """.trimIndent()
+        val ctx = MapExportAndIntentHelper.parseNavigationContextJson(json, null)
+        assertEquals("https://www.google.com/maps/place/Bogen+Hostel+as/@68.51358,17.01783,16z/data=!3d68.514123!4d17.012345", ctx.placeUrl)
+        assertEquals("https://www.google.com/maps/dir/?api=1&destination=68.514123,17.012345", ctx.directionsUrl)
+    }
 }

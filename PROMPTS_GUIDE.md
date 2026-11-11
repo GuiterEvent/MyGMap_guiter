@@ -546,3 +546,61 @@
    - 完成後更新 `PROJECT_PLAN.md`：將 Phase 12 勾選為 `[x]` 並填寫「Phase 12 交接紀錄」。
 ```
 
+---
+
+## 【Phase 13 Prompt】修正點選 Maps / 導航時地點微幅偏移問題（對齊純網頁版官方地標）（不執行 build）
+
+```markdown
+請先完整閱讀專案根目錄下的 `PROJECT_PLAN.md`（包含 Phase 1 ~ Phase 12 的交接紀錄與最新的 Phase 13 規格），並檢視現有的 `app/src/main/assets/inject_script.js`、`MapExportAndIntentHelper.kt`、`MyMapJsBridge.kt`、`MyMapScreen.kt` 與 `MapExportAndIntentHelperTest.kt`。
+
+現在請直接修改專案中的檔案，執行 **Phase 13：修正點選原生卡片「Maps」或「導航」按鈕時，Google Maps App 落點與純網頁版（「在 Google 地圖檢視」）存在微幅偏移的問題**（注意：請務必直接寫入修改 `d:\CodeBase\GuiterEvent\MyGMap_guiter` 下的檔案；完成程式碼修改後**請勿執行 `build.bat` 或 `gradlew` 編譯**，我會自己執行）。
+
+### 🔍 落點存在微幅偏移的根因分析：
+1. **Google Maps 網址中的 `/@lat,lng` 是攝影機視角中心，`!3dLAT!4dLNG` 才是真實地標座標**：
+   - 目前 `inject_script.js` 的 `parseLatLngPairFromString()` 與 `MapExportAndIntentHelper.kt` 的 `extractLatLngFromUrl()` 掃描 `a[href]` 連結時，只要碰到網址前面的 `/@68.51...,17.01...` 就立刻回傳該畫面中心座標，完全忽略後面真正精確的 **`!3dLAT!4dLNG`** 圖釘座標！
+2. **純網頁版點擊的是氣泡窗官方「在『Google 地圖』檢視」(`placeUrl`) 連結，但我們原生卡片把它簡化成了純座標**：
+   - 在 Google 我的地圖中，連結到 Google 地點的圖釘在氣泡窗底部顯示的純文字經緯度經常只有 5 位小數或對應草點（例如截圖中的 `68.513580, 17.017830`），而卡片上藍色的 **`在「Google 地圖」檢視`** `<a>` 連結（含 `/maps/place/...`、`cid=`、`ftid=`、`!3d!4d`）才真正指向 Google 地圖上的官方地標實體（如左側的 `Bogen Hostel as`）。
+   - 目前 `extractSelectedPinUiState()` 沒有保存這個 `placeUrl` / `directionsUrl`，導致「🗺️ Maps」與「🧭 導航」只送出 `geo:lat,lng` / `google.navigation:q=lat,lng`，與純網頁版直接開啟真實地標產生落差！
+
+---
+
+### 🛠️ 本階段實作要求：
+
+1. **修正 Google Maps 網址座標解析優先序：永遠優先解析 `!3d...!4d...` (`assets/inject_script.js` & `webview/MapExportAndIntentHelper.kt`)**：
+   - 在 `inject_script.js` 新增 **`extractExactCoordsFromMapsUrl(rawUrl)`**，並在 `MapExportAndIntentHelper.extractLatLngFromUrl(url)` 採用完全一致的優先順序：
+     1. **第一順位（最高精度真實圖釘）**：擷取 `!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)`（若同一網址有多組，取最後一組最靠近實體的 `!3d...!4d...`）。
+     2. **第二順位（明確目標參數）**：`destination=`、`daddr=`、`query=`、`q=`、`ll=`、`sll=`、`cbll=`、`viewpoint=`、`center=`。
+     3. **第三順位（最後備援）**：路徑中的 `/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)`（畫面視角中心）。
+   - 保持高精度座標小數（不要強制切斷成低位數，格式化字串可使用最多 7 位小數並去除無效尾零，或直接保留原小數精度）。
+
+2. **從氣泡窗擷取官方 `placeUrl`、`directionsUrl` 與官方地標名稱 (`assets/inject_script.js` & `webview/MyMapJsBridge.kt`)**：
+   - 在 `inject_script.js` 新增 `findInfoWindowActionUrls(container)`，遍歷 `#map-infowindow-container` / `.gm-style-iw` 內的所有 `a[href]`：
+     - **`directionsUrl`**：符合 `/maps/dir`、`daddr=` 或 `destination=` 的連結。
+     - **`placeUrl`**：文字包含 `Google 地圖` / `View in Google Maps` / `檢視`，或網址包含 `/maps/place`、`cid=`、`ftid=`、`ludocid=`、`maps.google.`、`maps.app.goo.gl`、`goo.gl/maps` 的連結（排除 `/maps/dir` 與 `/maps/d/`）。
+   - 修改 `extractPinCoordinatesFromContainer(container)`：
+     - **優先**從 `directionsUrl` 與 `placeUrl` 透過 `extractExactCoordsFromMapsUrl` 提取真實 `!3d!4d`（或明確查詢參數）座標；若官方連結僅含 `cid=`/`ftid=` 而無 `!3d!4d`，再檢查 `data-lat`/`data-lng`，最後才退回 `container.innerText` 中的座標文字（避免畫面視角 `/@lat,lng` 蓋過正確座標）。
+   - 在 `extractSelectedPinUiState()` 與 `extractNavigationContext()` 回傳 JSON 中新增 **`placeUrl`** 與 **`directionsUrl`** 欄位（`extractSelectedPinUiState()` 也加入這兩欄供 `SelectedPinInfo` 接收，同時維持原有 JSON 欄位不變）。
+   - 在 `MyMapJsBridge.kt` 的 `SelectedPinInfo` 新增 `val placeUrl: String = ""` 與 `val directionsUrl: String = ""`，並在 `parseSelectedPinInfo`（含 JVM fallback parser）完整解析之。
+
+3. **在 `MapExportAndIntentHelper.kt` 與 `MyMapScreen.kt` 優先使用 `placeUrl` / `directionsUrl` 對齊純網頁版結果**：
+   - 在 `MapNavigationContext` 新增 `val placeUrl: String = ""` 與 `val directionsUrl: String = ""`，並更新 `parseNavigationContextJson` 解析這兩個欄位。
+   - 修改 `MapExportAndIntentHelper.resolveGoogleMapsTargetUris` 與 `launchGoogleMapsApp`：
+     - **`GoogleMapsLaunchMode.PLACE_PIN`（「🗺️ 在 Maps 開啟」）**：
+       - 若 `navContext.placeUrl` 非空且為有效的外部 Google Maps 網址（如 `/maps/place/...`、`cid=`、`ftid=`），**直接回傳並以 `setPackage(GOOGLE_MAPS_PACKAGE)` 開啟 `navContext.placeUrl`**（完全對齊純網頁版點擊「在 Google 地圖檢視」的真實地點目標，不再硬轉成可能偏差的 `geo:lat,lng`）！
+       - 若沒有 `placeUrl` 時才退回原本的 `buildPlacePinUris(bestCoords, bestQuery)`。
+     - **`GoogleMapsLaunchMode.NAVIGATION`（「🧭 導航」）**：
+       - 若 `navContext.directionsUrl` 非空，優先從 `directionsUrl` 提取高精準 `!3d!4d` / `destination=` 建構導航（或直接開啟 `directionsUrl`）。
+       - 若無 `directionsUrl` 但 `navContext.placeUrl` 非空：
+         1. 若 `placeUrl` 內有明確 `!3dLAT!4dLNG` 或 `destination=` / `q=` 座標，優先使用該精確座標（避免氣泡窗純文字 5 位數座標微幅偏移）。
+         2. 若 `placeUrl` 帶有 Google 地點識別（例如 `cid=` / `ftid=` / `/maps/place/<地點名稱>/`）而無 `!3d!4d` 座標，可從 `/maps/place/<PlaceName>/` 或 `details` 中的官方地址搭配 `bestCoords` / 官方地標連結確保對準同一地點：具體來說，若 `placeUrl` 僅有 `cid=`/`ftid=` 或 `/maps/place/` 而沒有 `!3d!4d` 時，優先以官方 Google 地圖詳情（如 `/maps/place/` 路徑解析出的官方地名＋地址）或直接改用 `https://www.google.com/maps/dir/?api=1&destination=...`（若無座標才用文字，若有 `!3d!4d` 則用 `google.navigation:q=!3dLat,!4dLng`；同時若使用者只是對某張有 `placeUrl` 但無 `!3d!4d` 的地標點導航且原座標與官方地標名不同，若 `extractDirectionsDestinationFromUrl(placeUrl)` 解析到精確座標則用精確座標，否則若只有 `cid=`/`ftid=` 可直接保留 `placeUrl` 內座標或文字搜尋輔助對齊）。
+   - 在 `MyMapScreen.kt` 中 `SelectedPinBottomCard` 的 `buildNavContext` 內，將 `placeUrl = pin.placeUrl` 與 `directionsUrl = pin.directionsUrl` 傳入 `MapNavigationContext`！
+
+4. **更新單元測試與交接紀錄（請勿執行 build）**：
+   - 在 `MapExportAndIntentHelperTest.kt` 新增測試案例：
+     - 驗證 `extractLatLngFromUrl` 在同時存在 `/@68.51358,17.01783,16z` 與 `!3d68.514123!4d17.012345` 時，**正確回傳 `!3d!4d`（`68.514123, 17.012345`）而非 `@` 畫面中心**！
+     - 驗證 `resolveGoogleMapsTargetUris(PLACE_PIN, ...)` 在具備 `placeUrl`（例如 `https://maps.google.com/?cid=123456` 或 `/maps/place/...`）時優先使用 `placeUrl`。
+   - 在 `JsBridgeAndAssetsTest.kt` 更新 `parseSelectedPinInfo` 測試驗證 `placeUrl` / `directionsUrl` 欄位解析。
+   - **請勿執行 `build.bat` 或 `gradlew` 編譯指令**（使用者會自行手動編譯）。
+   - 完成後更新 `PROJECT_PLAN.md`：將 Phase 13 勾選為 `[x]` 並填寫「Phase 13 交接紀錄」。
+```
+

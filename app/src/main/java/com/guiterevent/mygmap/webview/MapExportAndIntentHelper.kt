@@ -30,7 +30,9 @@ data class MapNavigationContext(
     val selectedPinLng: Double? = null,
     val searchBoxText: String = "",
     val searchBoxLat: Double? = null,
-    val searchBoxLng: Double? = null
+    val searchBoxLng: Double? = null,
+    val placeUrl: String = "",
+    val directionsUrl: String = ""
 ) {
     /**
      * 按優先序取得目前最佳目標經緯度：
@@ -146,8 +148,67 @@ object MapExportAndIntentHelper {
     }
 
     /**
-     * 從網址中提取經緯度座標（支援 `ll=lat,lng`、`sll=lat,lng`、`cbll=lat,lng`、`viewpoint=lat,lng` 與 `@lat,lng`）。
-     * 自動處理 URL 編碼的 `%2C` 逗號。
+     * Phase 13：高精度經緯度數字格式化（最多 7 位小數，去除無效尾零）
+     */
+    fun formatHighPrecisionCoord(value: Double): String {
+        val s7 = String.format(Locale.US, "%.7f", value)
+        val trimmed = s7.trimEnd('0').trimEnd('.')
+        return if (!trimmed.contains('.')) "$trimmed.0" else trimmed
+    }
+
+    fun formatHighPrecisionLatLng(lat: Double, lng: Double): String {
+        return "${formatHighPrecisionCoord(lat)},${formatHighPrecisionCoord(lng)}"
+    }
+
+    /**
+     * Phase 13：從 Google Maps 網址中擷取真實圖釘高精準度座標（!3dLAT!4dLNG，取最後一組）
+     */
+    fun extractExactPinCoordsFromUrl(url: String?): GpsCoordinates? {
+        if (url.isNullOrBlank()) return null
+        val decodedUrl = try {
+            URLDecoder.decode(url, "UTF-8")
+        } catch (_: Exception) {
+            url.replace("%2C", ",", ignoreCase = true)
+        }
+        val pinPattern = Regex("!3d(-?\\d{1,2}\\.\\d+)!4d(-?\\d{1,3}\\.\\d+)")
+        val matches = pinPattern.findAll(decodedUrl).toList()
+        if (matches.isNotEmpty()) {
+            val lastMatch = matches.last()
+            val lat = lastMatch.groupValues[1].toDoubleOrNull()
+            val lng = lastMatch.groupValues[2].toDoubleOrNull()
+            if (lat != null && lng != null && LocationHelper.isValidLatLng(lat, lng)) {
+                return GpsCoordinates(latitude = lat, longitude = lng, provider = "URL")
+            }
+        }
+        return null
+    }
+
+    /**
+     * Phase 13：從 Google Maps 網址擷取官方地標名稱（例如 /maps/place/<地點名稱>/）
+     */
+    fun extractPlaceNameFromMapsUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val match = Regex("/maps/place/([^/@?#]+)", RegexOption.IGNORE_CASE).find(url)
+        if (match != null) {
+            val rawName = match.groupValues[1]
+            val decoded = try {
+                URLDecoder.decode(rawName.replace("+", " "), "UTF-8").trim()
+            } catch (_: Exception) {
+                rawName.replace("+", " ").trim()
+            }
+            if (decoded.isNotEmpty() && extractLatLngFromText(decoded) == null && !isCurrentLocationPlaceholder(decoded)) {
+                return decoded
+            }
+        }
+        return null
+    }
+
+    /**
+     * Phase 13：從網址中提取經緯度座標。
+     * 優先順序：
+     * 1. 第一順位（最高精度真實圖釘）：擷取 !3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)（若有多組取最後一組）
+     * 2. 第二順位（明確目標參數）：destination=, daddr=, query=, q=, ll=, sll=, cbll=, viewpoint=, center=
+     * 3. 第三順位（最後備援）：路徑中的 /@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)（畫面視角中心）
      */
     fun extractLatLngFromUrl(url: String?): GpsCoordinates? {
         if (url.isNullOrBlank()) return null
@@ -157,9 +218,21 @@ object MapExportAndIntentHelper {
             url.replace("%2C", ",", ignoreCase = true)
         }
 
-        // 1. 檢查常見查詢參數 ll=lat,lng / sll=lat,lng / cbll=lat,lng / viewpoint=lat,lng / q=lat,lng
+        // 1. 第一順位（最高精度真實圖釘）：擷取 !3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)（若有多組取最後一組）
+        val pinPattern = Regex("!3d(-?\\d{1,2}\\.\\d+)!4d(-?\\d{1,3}\\.\\d+)")
+        val matches = pinPattern.findAll(decodedUrl).toList()
+        if (matches.isNotEmpty()) {
+            val lastMatch = matches.last()
+            val lat = lastMatch.groupValues[1].toDoubleOrNull()
+            val lng = lastMatch.groupValues[2].toDoubleOrNull()
+            if (lat != null && lng != null && LocationHelper.isValidLatLng(lat, lng)) {
+                return GpsCoordinates(latitude = lat, longitude = lng, provider = "URL")
+            }
+        }
+
+        // 2. 第二順位（明確目標參數）：destination=, daddr=, query=, q=, ll=, sll=, cbll=, viewpoint=, center=
         val queryParamRegex = Regex(
-            "(?:[?&](?:ll|sll|cbll|viewpoint|center|destination|q)=)(-?\\d{1,2}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{1,3}(?:\\.\\d+)?)",
+            "(?:[?&](?:destination|daddr|query|q|ll|sll|cbll|viewpoint|center)=)(-?\\d{1,2}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{1,3}(?:\\.\\d+)?)",
             RegexOption.IGNORE_CASE
         )
         queryParamRegex.find(decodedUrl)?.let { match ->
@@ -170,7 +243,7 @@ object MapExportAndIntentHelper {
             }
         }
 
-        // 2. 檢查路徑中的 @lat,lng 格式（例如 /maps/@25.033964,121.564468,15z）
+        // 3. 第三順位（最後備援）：路徑中的 /@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)（畫面視角中心）
         val atPathRegex = Regex("@(-?\\d{1,2}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{1,3}(?:\\.\\d+)?)")
         atPathRegex.find(decodedUrl)?.let { match ->
             val lat = match.groupValues[1].toDoubleOrNull()
@@ -251,6 +324,13 @@ object MapExportAndIntentHelper {
             val centerLat = optValidDouble(json, unquotedJson, "mapCenterLat") ?: urlCoords?.latitude
             val centerLng = optValidDouble(json, unquotedJson, "mapCenterLng") ?: urlCoords?.longitude
 
+            val placeUrl = json.optString("placeUrl", "").ifBlank {
+                extractJsonStringField(unquotedJson, "placeUrl")
+            }
+            val directionsUrl = json.optString("directionsUrl", "").ifBlank {
+                extractJsonStringField(unquotedJson, "directionsUrl")
+            }
+
             MapNavigationContext(
                 pageUrl = pageUrl,
                 mid = mid,
@@ -261,7 +341,9 @@ object MapExportAndIntentHelper {
                 selectedPinLng = pinLng,
                 searchBoxText = searchBoxText,
                 searchBoxLat = searchLat,
-                searchBoxLng = searchLng
+                searchBoxLng = searchLng,
+                placeUrl = placeUrl,
+                directionsUrl = directionsUrl
             )
         } catch (_: Throwable) {
             val pageUrl = extractJsonStringField(unquotedJson, "pageUrl").ifBlank { urlFromFallback }
@@ -271,6 +353,9 @@ object MapExportAndIntentHelper {
             val searchBoxText = extractJsonStringField(unquotedJson, "searchBoxText")
             val searchCoords = extractLatLngFromText(searchBoxText)
             val urlCoords = extractLatLngFromUrl(pageUrl) ?: extractLatLngFromUrl(urlFromFallback)
+
+            val placeUrl = extractJsonStringField(unquotedJson, "placeUrl")
+            val directionsUrl = extractJsonStringField(unquotedJson, "directionsUrl")
 
             MapNavigationContext(
                 pageUrl = pageUrl,
@@ -282,7 +367,9 @@ object MapExportAndIntentHelper {
                 selectedPinLng = extractJsonDoubleField(unquotedJson, "selectedPinLng"),
                 searchBoxText = searchBoxText,
                 searchBoxLat = extractJsonDoubleField(unquotedJson, "searchBoxLat") ?: searchCoords?.latitude,
-                searchBoxLng = extractJsonDoubleField(unquotedJson, "searchBoxLng") ?: searchCoords?.longitude
+                searchBoxLng = extractJsonDoubleField(unquotedJson, "searchBoxLng") ?: searchCoords?.longitude,
+                placeUrl = placeUrl,
+                directionsUrl = directionsUrl
             )
         }
     }
@@ -426,7 +513,7 @@ object MapExportAndIntentHelper {
             if (!candidateSegment.isNullOrBlank() && !isCurrentLocationPlaceholder(candidateSegment)) {
                 val coords = extractLatLngFromText(candidateSegment)
                 return if (coords != null && candidateSegment.matches(Regex("^-?\\d{1,2}\\.\\d+\\s*,\\s*-?\\d{1,3}\\.\\d+$"))) {
-                    String.format(Locale.US, "%.6f,%.6f", coords.latitude, coords.longitude)
+                    formatHighPrecisionLatLng(coords.latitude, coords.longitude)
                 } else {
                     candidateSegment
                 }
@@ -443,9 +530,9 @@ object MapExportAndIntentHelper {
             }
         }
 
-        // 4. 退回從網址中的 ll / sll / @lat,lng 解析座標
+        // 4. 退回從網址中的 !3d!4d / 參數 / @lat,lng 解析座標
         extractLatLngFromUrl(trimmed)?.let { coords ->
-            return String.format(Locale.US, "%.6f,%.6f", coords.latitude, coords.longitude)
+            return formatHighPrecisionLatLng(coords.latitude, coords.longitude)
         }
 
         return null
@@ -669,7 +756,7 @@ object MapExportAndIntentHelper {
     ): Pair<String, String> {
         val target = when {
             coords != null && LocationHelper.isValidLatLng(coords.latitude, coords.longitude) ->
-                String.format(Locale.US, "%.6f,%.6f", coords.latitude, coords.longitude)
+                formatHighPrecisionLatLng(coords.latitude, coords.longitude)
             queryOrTitle.isNotBlank() -> queryOrTitle.trim()
             else -> ""
         }
@@ -688,7 +775,7 @@ object MapExportAndIntentHelper {
      * - `browserFallbackUrl`：`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=lat,lng`
      */
     fun buildStreetViewUris(coords: GpsCoordinates): Pair<String, String> {
-        val latLng = String.format(Locale.US, "%.6f,%.6f", coords.latitude, coords.longitude)
+        val latLng = formatHighPrecisionLatLng(coords.latitude, coords.longitude)
         val appUri = "google.streetview:cbll=$latLng"
         val browserUrl = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${urlEncode(latLng)}"
         return Pair(appUri, browserUrl)
@@ -705,7 +792,7 @@ object MapExportAndIntentHelper {
     ): Pair<String, String> {
         val cleanLabel = labelOrQuery.trim()
         if (coords != null && LocationHelper.isValidLatLng(coords.latitude, coords.longitude)) {
-            val latLng = String.format(Locale.US, "%.6f,%.6f", coords.latitude, coords.longitude)
+            val latLng = formatHighPrecisionLatLng(coords.latitude, coords.longitude)
             val geoQuery = if (cleanLabel.isNotEmpty() && extractLatLngFromText(cleanLabel) == null) {
                 "$latLng(${urlEncode(cleanLabel)})"
             } else {
@@ -757,7 +844,11 @@ object MapExportAndIntentHelper {
                 }
             }
             GoogleMapsLaunchMode.NAVIGATION -> {
-                buildNavigationUris(bestCoords, bestQuery)
+                if (customTrimmed.isNotEmpty()) {
+                    buildNavigationUris(bestCoords, bestQuery)
+                } else {
+                    resolveNavigationTargetUris(navContext, bestCoords, bestQuery)
+                }
             }
             GoogleMapsLaunchMode.STREET_VIEW -> {
                 if (bestCoords != null) {
@@ -767,7 +858,14 @@ object MapExportAndIntentHelper {
                 }
             }
             GoogleMapsLaunchMode.PLACE_PIN -> {
-                buildPlacePinUris(bestCoords, bestQuery)
+                if (customTrimmed.isEmpty() &&
+                    navContext.placeUrl.isNotBlank() &&
+                    isExternalGoogleMapsUrl(navContext.placeUrl)
+                ) {
+                    Pair(navContext.placeUrl.trim(), navContext.placeUrl.trim())
+                } else {
+                    buildPlacePinUris(bestCoords, bestQuery)
+                }
             }
             GoogleMapsLaunchMode.SMART_OPEN -> {
                 // 若使用者有明確選取圖釘或搜尋框有內容，優先開啟該地點；否則若有 mid 則開啟整張地圖
@@ -776,9 +874,15 @@ object MapExportAndIntentHelper {
                         (navContext.searchBoxLat != null && navContext.searchBoxLng != null) ||
                         navContext.selectedPinTitle.isNotBlank() ||
                         navContext.searchBoxText.isNotBlank() ||
+                        navContext.placeUrl.isNotBlank() ||
                         customTrimmed.isNotEmpty()
 
-                if (hasSelectedPinOrSearch && (bestCoords != null || bestQuery.isNotEmpty())) {
+                if (customTrimmed.isEmpty() &&
+                    navContext.placeUrl.isNotBlank() &&
+                    isExternalGoogleMapsUrl(navContext.placeUrl)
+                ) {
+                    Pair(navContext.placeUrl.trim(), navContext.placeUrl.trim())
+                } else if (hasSelectedPinOrSearch && (bestCoords != null || bestQuery.isNotEmpty())) {
                     buildPlacePinUris(bestCoords, bestQuery)
                 } else if (mid.isNotEmpty()) {
                     val viewerUrl = buildMyMapsViewerUrl(mid, bestCoords)
@@ -790,6 +894,73 @@ object MapExportAndIntentHelper {
                 }
             }
         }
+    }
+
+    /**
+     * Phase 13：智慧解析導航目標，優先使用 directionsUrl 與 placeUrl 內的高精準圖釘與官方地點資訊
+     */
+    private fun resolveNavigationTargetUris(
+        navContext: MapNavigationContext,
+        fallbackCoords: GpsCoordinates?,
+        fallbackQuery: String
+    ): Pair<String, String> {
+        // 1. 若 directionsUrl 非空，優先從 directionsUrl 提取高精度 !3d!4d 或 destination=
+        if (navContext.directionsUrl.isNotBlank()) {
+            val dirUrl = navContext.directionsUrl.trim()
+            val exactPin = extractExactPinCoordsFromUrl(dirUrl)
+            if (exactPin != null) {
+                return buildNavigationUris(exactPin, navContext.selectedPinTitle)
+            }
+            val dirDest = extractDirectionsDestinationFromUrl(dirUrl)
+            if (!dirDest.isNullOrBlank()) {
+                val destCoords = extractLatLngFromText(dirDest)
+                return if (destCoords != null) {
+                    buildNavigationUris(destCoords, navContext.selectedPinTitle)
+                } else {
+                    buildNavigationUris(null, dirDest)
+                }
+            }
+            val generalCoords = extractLatLngFromUrl(dirUrl)
+            if (generalCoords != null) {
+                return buildNavigationUris(generalCoords, navContext.selectedPinTitle)
+            }
+        }
+
+        // 2. 若無 directionsUrl 但 placeUrl 非空：
+        if (navContext.placeUrl.isNotBlank()) {
+            val placeUrl = navContext.placeUrl.trim()
+
+            // 2.1 優先檢查 placeUrl 內明確的 !3dLAT!4dLNG 真實地標座標
+            val exactPin = extractExactPinCoordsFromUrl(placeUrl)
+            if (exactPin != null) {
+                return buildNavigationUris(exactPin, navContext.selectedPinTitle)
+            }
+
+            // 2.2 檢查明確目標參數（destination= / daddr= / q=lat,lng / query=lat,lng）
+            val queryParamRegex = Regex(
+                "(?:[?&](?:destination|daddr|query|q)=)(-?\\d{1,2}(?:\\.\\d+)?)\\s*,\\s*(-?\\d{1,3}(?:\\.\\d+)?)",
+                RegexOption.IGNORE_CASE
+            )
+            queryParamRegex.find(placeUrl)?.let { match ->
+                val lat = match.groupValues[1].toDoubleOrNull()
+                val lng = match.groupValues[2].toDoubleOrNull()
+                if (lat != null && lng != null && LocationHelper.isValidLatLng(lat, lng)) {
+                    return buildNavigationUris(
+                        GpsCoordinates(lat, lng, provider = "URL_PARAM"),
+                        navContext.selectedPinTitle
+                    )
+                }
+            }
+
+            // 2.3 若 placeUrl 帶有 Google 地點識別（如 /maps/place/<地點名稱>/、cid=、ftid=），優先使用官方地名對準官方地標
+            val officialName = extractPlaceNameFromMapsUrl(placeUrl)
+            if (!officialName.isNullOrBlank()) {
+                return buildNavigationUris(null, officialName)
+            }
+        }
+
+        // 3. 保底退回原本 bestCoords 與 bestQuery
+        return buildNavigationUris(fallbackCoords, fallbackQuery)
     }
 
     /**
@@ -1192,6 +1363,7 @@ object MapExportAndIntentHelper {
         val match = regex.find(json) ?: return ""
         return match.groupValues[1]
             .replace("\\\"", "\"")
+            .replace("\\/", "/")
             .replace("\\\\", "\\")
     }
 
