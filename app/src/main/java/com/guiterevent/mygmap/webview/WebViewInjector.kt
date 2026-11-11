@@ -423,4 +423,44 @@ object WebViewInjector {
             onResult(contextInfo)
         }
     }
+
+    /**
+     * Phase 12：呼叫 `window.MyGMapHelper.triggerInfoWindowEdit()` 點擊目前氣泡窗的編輯按鈕
+     */
+    fun triggerInfoWindowEdit(
+        webView: WebView,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        val script = """
+            (function() {
+                if (window.MyGMapHelper && typeof window.MyGMapHelper.triggerInfoWindowEdit === 'function') {
+                    return Boolean(window.MyGMapHelper.triggerInfoWindowEdit());
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { rawResult ->
+            onResult(rawResult == "true")
+        }
+    }
+
+    /**
+     * Phase 12：呼叫 `window.MyGMapHelper.closeInfoWindow()` 關閉目前展開的網頁氣泡窗
+     */
+    fun closeInfoWindow(
+        webView: WebView,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        val script = """
+            (function() {
+                if (window.MyGMapHelper && typeof window.MyGMapHelper.closeInfoWindow === 'function') {
+                    return Boolean(window.MyGMapHelper.closeInfoWindow());
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { rawResult ->
+            onResult(rawResult == "true")
+        }
+    }
 }

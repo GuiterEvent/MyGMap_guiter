@@ -476,3 +476,73 @@
    - 完成後更新 `PROJECT_PLAN.md`：將 Phase 11 勾選為 `[x]` 並填寫「Phase 11 交接紀錄」。
 ```
 
+---
+
+## 【Phase 12 Prompt】POI 點選氣泡窗行動版美化 + 原生 Material 3 底部 POI 資訊快捷卡（不執行 build）
+
+```markdown
+請先完整閱讀專案根目錄下的 `PROJECT_PLAN.md`（包含 Phase 1 ~ Phase 11 的交接紀錄與最新的 Phase 12 規格），並檢視現有的 `app/src/main/assets/inject_style.css`、`app/src/main/assets/inject_script.js`、`MyMapJsBridge.kt`、`WebViewInjector.kt`、`MyMapScreen.kt` 與 `JsBridgeAndAssetsTest.kt`。
+
+現在請直接修改專案中的檔案，執行 **Phase 12：美化點選地圖圖釘 (POI) 後的氣泡窗排版，並新增單手好按的原生 Material 3 底部 POI 資訊快捷卡 (`SelectedPinBottomCard`)**（注意：請務必直接寫入修改 `d:\CodeBase\GuiterEvent\MyGMap_guiter` 下的檔案；完成程式碼修改後**請勿執行 `build.bat` 或 `gradlew` 編譯**，我會自己執行）。
+
+### 🔍 目前 POI 氣泡窗的視覺與操作痛點（務必全部改善）：
+1. **桌面版氣泡窗 (`#map-infowindow-container` / `.gm-style-iw`) 在手機直向螢幕寬度溢出與裁字**：
+   - 標題、地址及「在『Google 地圖』檢視」會被右邊緣切斷並出現底部水平捲軸；經緯度座標與底部小圖示按鈕（樣式、編輯、相片、導航、刪除）容易貼邊或被截斷，在手機上極難點擊。
+   - 標題下方常有一段過大的空白區域，「Google 地圖詳細資料」區塊視覺較生硬。
+2. **純網頁浮動氣泡窗受限於圖釘在畫布上的位置，不適合手機單手操作**：
+   - 若結合**「網頁氣泡窗 CSS 淨化美化」＋「原生 Material 3 底部 POI 快捷資訊卡」**，點選地圖上的任意 POI 時，既能擁有滑順現代的底部卡片體驗（一指點選 🧭 導航 / 🏙️ 街景 / ✏️ 編輯 / 📋 複製座標），又能在進入編輯或切換成「原始桌面排版 (逃生門)」時完整保留官方功能！
+
+---
+
+### 🛠️ 本階段實作要求：
+
+1. **全面美化網頁內浮動氣泡窗 CSS (`assets/inject_style.css`)**（所有規則仍必須嚴格限定於 `body.mygmap-mobile-mode` 下，確保「原始桌面排版」逃生門 100% 有效）：
+   - **消除左右裁字與水平捲軸**：
+     - 針對 `.gm-style-iw-c`、`.gm-style-iw-d`、`#map-infowindow-container` 與內部所有直接容器設定 `max-width: calc(100vw - 28px) !important`、子元素 `max-width: 100% !important`、`overflow-x: hidden !important`、`box-sizing: border-box !important`。
+     - 對氣泡窗內的標題、內文與連結強制設定 `white-space: normal !important; word-break: break-word !important; overflow-wrap: anywhere !important;`（確保長標題與「在『Google 地圖』檢視」不再被右邊緣截斷）。
+   - **卡片圓角、留白整理與詳細資料美化**：
+     - 為 `.gm-style-iw-c` 加上 `border-radius: 16px !important`、`box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22) !important`、`padding: 10px 12px !important`。
+     - 精簡 `#map-infowindow-container` 內部過高的 `min-height` / 多餘上下 `margin` 與 `padding`（消除標題與「Google 地圖詳細資料」之間的大塊空白）。
+     - 美化氣泡窗內的詳細資料區塊與 `a[href*="maps"]` 連結（柔和淺灰藍背景 `#F8FAFC`、細邊框 `#E2E8F0`、`border-radius: 10px`、清晰內距與行高）。
+   - **氣泡窗底部按鈕列對齊與觸控美化**：
+     - 針對氣泡窗底部按鈕所在列及按鈕（`#map-infowindow-edit-button`、`#map-infowindow-delete-button`、`#map-infowindow-directions-button`、`#map-infowindow-done-editing-button`、`#map-infowindow-cancel-editing-button` 等）設定 `flex-wrap: wrap !important`、`gap: 6px !important`、圓角底色與足夠觸控大小，確保所有圖示都能完整顯示在卡片內、不會突出螢幕外。
+
+2. **偵測氣泡窗開啟並即時傳送 POI 詳細資訊給 Android (`assets/inject_script.js` & `webview/MyMapJsBridge.kt` & `webview/WebViewInjector.kt`)**：
+   - 在 `inject_script.js` 新增 `extractSelectedPinUiState()`：
+     - 檢查目前畫面上是否有展開且可見的氣泡窗（`#map-infowindow-container` / `.gm-style-iw`）。
+     - 若氣泡窗未展開，回傳 `{ visible: false }`；若已展開，盡可能擷取：
+       - `visible: true`
+       - `title`: 圖釘名稱（優先從氣泡窗標題節點或第一個 `[id^="map-infowindow-attr-"]` 讀取，並過濾空白）
+       - `details`: 整理後的詳細資料 / 地址 / 備註摘要（排除重複的標題、評分數字與經緯度純座標字串，保留如地址或自訂說明）
+       - `rating`: 若氣泡窗內含 Google 地圖詳細資料評分（如 `4.6`），擷取出來（選填）
+       - `coordinates`: 若擷取到座標，格式化為 `"lat, lng"` 字串；同時提供 `lat` 與 `lng` 數值
+       - `isEditMode`: 判斷目前氣泡窗是否正在編輯輸入狀態（例如 `#map-infowindow-done-editing-button` 可見或氣泡窗內有可編輯 `input`/`textarea`/`contenteditable="true"`）
+   - 新增 `reportSelectedPinStateIfChanged()`：在 `scanAndTagDom()`、點擊地圖後、以及既有的節流 `MutationObserver` 回呼中檢查序列化快照是否有變化，有變化才呼叫 `window.AndroidBridge.onSelectedPinStateChanged(json)`，避免無謂重複觸發。
+   - 在 `inject_script.js` 公開 `window.MyGMapHelper.triggerInfoWindowEdit()`（尋找並 `simulateClick` `#map-infowindow-edit-button`）與 `window.MyGMapHelper.closeInfoWindow()`（點擊氣泡窗關閉按鈕，例如 `.gm-style-iw button.gm-ui-hover-effect`、`#map-infowindow-close-button` 或 `[aria-label*="關閉"]` / `[aria-label*="Close"]`）。
+   - 在 `WebViewInjector.kt` 加入對應的 `triggerInfoWindowEdit(webView, onResult)` 與 `closeInfoWindow(webView)` 包裝方法。
+   - 在 `MyMapJsBridge.kt` 新增：
+     - `data class SelectedPinInfo(val visible: Boolean = false, val title: String = "", val details: String = "", val rating: String = "", val coordinates: String = "", val lat: Double? = null, val lng: Double? = null, val isEditMode: Boolean = false)`
+     - `companion object` 新增 `fun parseSelectedPinInfo(jsonStr: String): SelectedPinInfo`（內建與 `parseDomInspectInfo` 相同的純 JVM 單元測試正規表示式備援解析！）。
+     - 新增 `@JavascriptInterface fun onSelectedPinStateChanged(infoJson: String)` 與建構子回呼 `onSelectedPinStateChangedCallback: (SelectedPinInfo) -> Unit = {}`。
+
+3. **實作「原生 Material 3 底部 POI 資訊快捷卡 (`SelectedPinBottomCard`)」(`ui/MyMapScreen.kt`)**：
+   - 在 `MyMapScreen.kt` 新增狀態 `selectedPinInfo: SelectedPinInfo?`（當離開編輯頁或重新載入頁面時重設為 `null`）。
+   - 當 `selectedPinInfo?.visible == true && !selectedPinInfo.isEditMode && webError == null && !isOffline`（且 `activeSearchQuery == null` 或優先於搜尋提示條）時，在畫布底部（`BottomActionBar` 正上方）透過 `AnimatedVisibility` 顯示質感極佳的 **`SelectedPinBottomCard`**：
+     - 採用高質感 Material 3 `Surface` 卡片（圓角 `18.dp`、微陰影 `10.dp`、白色背景搭配 `#E2E8F0` 細邊框、左側 Google 藍重點強調條或小圖釘徽章）。
+     - **標題區**：顯示 `selectedPinInfo.title`（粗體 `15.sp`，最多 2 行）＋ 右上角精緻關閉按鈕 (`Icons.Default.Close`，點擊時收合卡片並呼叫 `WebViewInjector.closeInfoWindow(wv)`）。
+     - **資訊摘要區**：
+       - 若有 `rating` 或 `details`，以淺灰小卡 (`#F8FAFC`) 呈現地址 / 詳細資料與 ⭐ 評分（最多 2 行，清爽不佔空間）。
+       - 若有 `coordinates`（`lat, lng`），顯示為可點擊複製的等寬字型圓角小膠囊（點擊立即複製座標並 Toast 提示 `📋 已複製座標`）。
+     - **單手快捷操作按鈕列**（圓角膠囊 / FilledTonal 按鈕，好按不誤觸）：
+       1. **「🧭 導航」**（主色調醒目實心按鈕）：將 `selectedPinInfo` 組裝為 `MapNavigationContext`（帶入 `mid`、`selectedPinTitle`、`selectedPinLat`、`selectedPinLng`），一鍵呼叫 `MapExportAndIntentHelper.launchGoogleMapsApp(context, GoogleMapsLaunchMode.NAVIGATION, ...)` 直接開始 Google Maps 導航！
+       2. **「🏙️ 街景」**（若有有效座標）：一鍵呼叫 `MapExportAndIntentHelper.launchGoogleMapsApp(context, GoogleMapsLaunchMode.STREET_VIEW, ...)` 查看 360° 街景！
+       3. **「✏️ 編輯」**：呼叫 `WebViewInjector.triggerInfoWindowEdit(wv)` 進入網頁氣泡窗編輯模式（進入編輯模式後原生卡會自動暫時隱藏，讓出空間給鍵盤與輸入框）。
+       4. **「🗺️ 在 Maps 開啟」**：一鍵呼叫 `GoogleMapsLaunchMode.PLACE_PIN` 在官方 Google Maps App 檢視該地點完整店家評價與資訊。
+   - **排版避讓協調**：動態調整右下角 `ExtendedFloatingActionButton`（「📍 標記目前位置」）的 `bottom` padding（或當 `SelectedPinBottomCard` 顯示時，將 FAB 暫時向上移動或隱藏避讓，確保 FAB 絕對不會壓在 POI 卡片文字或按鈕上方！）。
+
+4. **更新單元測試與交接紀錄（請勿執行 build）**：
+   - 在 `JsBridgeAndAssetsTest.kt` 新增 `parseSelectedPinInfo` 單元測試（含正常顯示、編輯模式與空值狀態），並擴充檢查 `inject_style.css` 與 `inject_script.js` 新增的 POI 美化與 `onSelectedPinStateChanged` 規則。
+   - **請勿執行 `build.bat` 或 `gradlew` 編譯指令**（使用者會自行手動編譯）。
+   - 完成後更新 `PROJECT_PLAN.md`：將 Phase 12 勾選為 `[x]` 並填寫「Phase 12 交接紀錄」。
+```
+

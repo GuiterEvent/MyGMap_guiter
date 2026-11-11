@@ -59,6 +59,21 @@ data class GpsPinStatusInfo(
 )
 
 /**
+ * Phase 12：儲存從 `inject_script.js` 氣泡窗偵測 (`extractSelectedPinUiState`) 回報的目前選取 POI 狀態。
+ */
+data class SelectedPinInfo(
+    val visible: Boolean = false,
+    val title: String = "",
+    val details: String = "",
+    val rating: String = "",
+    val coordinates: String = "",
+    val lat: Double? = null,
+    val lng: Double? = null,
+    val isEditMode: Boolean = false,
+    val photoUrls: List<String> = emptyList()
+)
+
+/**
  * WebView 與 Android 原生層的雙向通訊橋樑 (`window.AndroidBridge`)。
  *
  * 注意：`@JavascriptInterface` 方法皆由 WebView 內部的 `JavaBridge` 背景執行緒呼叫，
@@ -72,7 +87,8 @@ class MyMapJsBridge(
     private val onInspectModeChangedCallback: (isInspectMode: Boolean) -> Unit = {},
     private val onActiveToolChangedCallback: (toolName: String) -> Unit = {},
     private val onGpsPinStatusCallback: (status: GpsPinStatusInfo) -> Unit = {},
-    private val onExternalNavigationRequestedCallback: (targetUrl: String?, contextJson: String?) -> Unit = { _, _ -> }
+    private val onExternalNavigationRequestedCallback: (targetUrl: String?, contextJson: String?) -> Unit = { _, _ -> },
+    private val onSelectedPinStateChangedCallback: (SelectedPinInfo) -> Unit = {}
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -194,11 +210,106 @@ class MyMapJsBridge(
             }
         }
 
+        /**
+         * Phase 12：將 JS `onSelectedPinStateChanged` 傳回的 JSON 字串解析為 [SelectedPinInfo]。
+         * 內建對 JVM 單元測試環境 (Stub JSONObject) 的正規表達式備援解析。
+         */
+        fun parseSelectedPinInfo(jsonStr: String): SelectedPinInfo {
+            if (jsonStr.isBlank()) {
+                return SelectedPinInfo(visible = false)
+            }
+
+            return try {
+                val json = JSONObject(jsonStr)
+                val visible = (json.has("visible") && json.optBoolean("visible", false)) ||
+                    extractJsonBooleanField(jsonStr, "visible")
+                if (!visible) {
+                    return SelectedPinInfo(visible = false)
+                }
+                SelectedPinInfo(
+                    visible = true,
+                    title = safeOptJsonString(json, jsonStr, "title"),
+                    details = safeOptJsonString(json, jsonStr, "details"),
+                    rating = safeOptJsonString(json, jsonStr, "rating"),
+                    coordinates = safeOptJsonString(json, jsonStr, "coordinates"),
+                    lat = safeOptJsonDouble(json, jsonStr, "lat"),
+                    lng = safeOptJsonDouble(json, jsonStr, "lng"),
+                    isEditMode = (json.has("isEditMode") && json.optBoolean("isEditMode", false)) ||
+                        extractJsonBooleanField(jsonStr, "isEditMode"),
+                    photoUrls = safeOptJsonStringArray(json, jsonStr, "photoUrls")
+                )
+            } catch (_: Throwable) {
+                val visible = extractJsonBooleanField(jsonStr, "visible")
+                if (!visible) {
+                    return SelectedPinInfo(visible = false)
+                }
+                SelectedPinInfo(
+                    visible = true,
+                    title = extractJsonStringField(jsonStr, "title"),
+                    details = extractJsonStringField(jsonStr, "details"),
+                    rating = extractJsonStringField(jsonStr, "rating"),
+                    coordinates = extractJsonStringField(jsonStr, "coordinates"),
+                    lat = extractJsonDoubleField(jsonStr, "lat"),
+                    lng = extractJsonDoubleField(jsonStr, "lng"),
+                    isEditMode = extractJsonBooleanField(jsonStr, "isEditMode"),
+                    photoUrls = extractJsonStringArrayField(jsonStr, "photoUrls")
+                )
+            }
+        }
+
+        private fun safeOptJsonStringArray(json: JSONObject, rawJson: String, key: String): List<String> {
+            val arr = if (json.has(key) && !json.isNull(key)) json.optJSONArray(key) else null
+            if (arr != null && arr.length() > 0) {
+                val list = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optString(i, "").trim()
+                    if (item.isNotEmpty()) list.add(item)
+                }
+                if (list.isNotEmpty()) return list
+            }
+            return extractJsonStringArrayField(rawJson, key)
+        }
+
+        private fun extractJsonStringArrayField(json: String, key: String): List<String> {
+            val arrayRegex = Regex("\"${Regex.escape(key)}\"\\s*:\\s*\\[(.*?)\\]", RegexOption.DOT_MATCHES_ALL)
+            val body = arrayRegex.find(json)?.groupValues?.getOrNull(1) ?: return emptyList()
+            val itemRegex = Regex("\"((?:\\\\.|[^\"\\\\])*)\"")
+            return itemRegex.findAll(body).mapNotNull { match ->
+                match.groupValues[1]
+                    .replace("\\/", "/")
+                    .replace("\\\"", "\"")
+                    .replace("\\n", "\n")
+                    .replace("\\\\", "\\")
+                    .trim()
+                    .takeIf { it.isNotEmpty() }
+            }.toList()
+        }
+
+        private fun safeOptJsonString(json: JSONObject, rawJson: String, key: String): String {
+            val fromObj = if (json.has(key) && !json.isNull(key)) {
+                json.optString(key, "").orEmpty()
+            } else {
+                ""
+            }
+            return fromObj.ifBlank { extractJsonStringField(rawJson, key) }
+        }
+
+        private fun safeOptJsonDouble(json: JSONObject, rawJson: String, key: String): Double? {
+            if (json.has(key) && !json.isNull(key)) {
+                val parsed = json.optDouble(key, Double.NaN)
+                if (!parsed.isNaN() && !parsed.isInfinite()) {
+                    return parsed
+                }
+            }
+            return extractJsonDoubleField(rawJson, key)
+        }
+
         private fun extractJsonStringField(json: String, key: String): String {
             val regex = Regex("\"${Regex.escape(key)}\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"")
             val match = regex.find(json) ?: return ""
             return match.groupValues[1]
                 .replace("\\\"", "\"")
+                .replace("\\n", "\n")
                 .replace("\\\\", "\\")
         }
 
@@ -206,6 +317,12 @@ class MyMapJsBridge(
             val regex = Regex("\"${Regex.escape(key)}\"\\s*:\\s*(true|false)")
             val match = regex.find(json) ?: return false
             return match.groupValues[1] == "true"
+        }
+
+        private fun extractJsonDoubleField(json: String, key: String): Double? {
+            val regex = Regex("\"${Regex.escape(key)}\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)")
+            val match = regex.find(json) ?: return null
+            return match.groupValues[1].toDoubleOrNull()
         }
     }
 
@@ -299,6 +416,19 @@ class MyMapJsBridge(
         Log.i(TAG, "onExternalNavigationRequested -> targetUrl=$targetUrl")
         mainHandler.post {
             onExternalNavigationRequestedCallback(targetUrl, contextJson)
+        }
+    }
+
+    /**
+     * Phase 12：由 `inject_script.js` 的 `reportSelectedPinStateIfChanged()` 呼叫，
+     * 即時回報目前選取圖釘氣泡窗的展開狀態、標題、詳細資料、評分、座標與編輯模式。
+     */
+    @JavascriptInterface
+    fun onSelectedPinStateChanged(infoJson: String) {
+        Log.d(TAG, "onSelectedPinStateChanged -> $infoJson")
+        val parsed = parseSelectedPinInfo(infoJson)
+        mainHandler.post {
+            onSelectedPinStateChangedCallback(parsed)
         }
     }
 }

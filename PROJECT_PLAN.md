@@ -171,6 +171,15 @@ MyGMap_guiter/
     3. **JS 層 `window.open` 與氣泡窗導航按鈕保底攔截 (`assets/inject_script.js` & `MyMapJsBridge.kt`)**：
        - 在 `inject_script.js` 包裝 `window.open`：若目標網址為外部 Google Maps 導航/地點連結，直接呼叫 `window.AndroidBridge.onExternalNavigationRequested(url, contextJson)` 交給 Android 原生層開啟 Google Maps App。
        - 強化 `extractNavigationContext()` 支援從氣泡窗與側邊/底部詳情卡提取圖釘標題、座標與 `maps` 連結；當使用者點擊氣泡窗內的「導航 / 規劃路線 (`directions`)」按鈕且未觸發網頁內部路線圖層或標準連結跳轉時，自動把目前選取圖釘資訊傳給 `AndroidBridge.onExternalNavigationRequested`，確保 **100% 一點即開 Google Maps 導航**。
+- [x] **Phase 12：POI 點選氣泡窗行動版美化 + 原生 Material 3 底部 POI 資訊快捷卡 (`SelectedPinBottomCard`)**
+  - **問題痛點與改造重點**：
+    1. **美化網頁內浮動氣泡窗 (`assets/inject_style.css`)**（嚴格限定於 `body.mygmap-mobile-mode` 下以維持 CSS Bypass 逃生門）：
+       - **徹底消除左右裁字與水平捲軸**：限制 `.gm-style-iw-c`、`.gm-style-iw-d`、`#map-infowindow-container` 及其子容器 `max-width: calc(100vw - 28px) !important` 與 `overflow-x: hidden !important`，強制標題、地址及「在『Google 地圖』檢視」等文字自動換行 (`white-space: normal !important; word-break: break-word !important;`)。
+       - **現代化圓角卡片排版**：優化氣泡窗圓角 (`16px`)、陰影、壓縮過大空白間距、美化「Google 地圖詳細資料」卡片背景與邊框，並將氣泡窗底部操作列（樣式、編輯、相片、導航、刪除、儲存/取消）調整為 `flex-wrap: wrap` 對齊與舒適觸控按鈕樣式，防止按鈕擠出螢幕外。
+    2. **實作「原生 Material 3 底部 POI 資訊快捷卡 (`SelectedPinBottomCard`)」(`inject_script.js`、`MyMapJsBridge.kt`、`WebViewInjector.kt`、`MyMapScreen.kt`)**：
+       - 透過 `inject_script.js` 的 `MutationObserver` 即時偵測點選 POI 後展開的氣泡窗，擷取**標題、詳細地址/備註、評分、經緯度座標**與是否處於氣泡窗編輯模式，並回報給 `AndroidBridge.onSelectedPinStateChanged(json)`。
+       - 當選取 POI 且非氣泡窗編輯狀態時，於 `BottomActionBar` 上方平滑彈出簡潔美觀的原生 **`SelectedPinBottomCard`**：顯示完整不裁字的 POI 名稱、摘要、可點擊複製的座標膠囊，以及好按的圓角動作按鈕（「🧭 導航」、「🏙️ 街景」、「✏️ 編輯」、「🗺️ 在 Maps 開啟」、「✕ 關閉」）。
+       - 點擊「✏️ 編輯」時自動呼叫 `WebViewInjector.triggerInfoWindowEdit(webView)` 開啟網頁編輯表單並暫時收合原生快捷卡（避免遮擋輸入）；點擊空白處關閉氣泡窗時同步隱藏原生卡片，並自動協調右下角 GPS FAB 的位置與間距避免重疊。
 
 ---
 
@@ -495,6 +504,33 @@ MyGMap_guiter/
     - 於 `inject_style.css` 將 `#map-infowindow-directions-button` 及氣泡窗內 `a[href*="/maps/dir"]` 納入 `min-height: 42px`、`min-width: 44px` 觸控熱區保護。
   - `app/src/test/java/com/guiterevent/mygmap/MapExportAndIntentHelperTest.kt` & `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`：
     - 擴充驗證 `isExternalGoogleMapsUrl`、`extractDirectionsDestinationFromUrl` 與 Phase 11 JS/CSS 必要規則與選擇器。
+- **驗證結果與注意事項**：
+  - 已執行 `node --check app/src/main/assets/inject_script.js` 驗證 JS 語法通過（exit code 0）。
+  - 依規範未執行 `build.bat` 或 `gradlew` 編譯與 Gradle 單元測試，請使用者自行手動執行編譯與實機測試。
+
+### Phase 12 交接紀錄
+- **狀態**：已完成 (`[x]`)
+- **已建立/修改檔案**：
+  - `app/src/main/assets/inject_style.css`：
+    - 在 `body.mygmap-mobile-mode` 嚴格作用域下全面美化網頁氣泡窗（維持 CSS Bypass 逃生門 100% 有效）：
+      - 針對 `.gm-style-iw`、`.gm-style-iw-c`、`.gm-style-iw-d`、`#map-infowindow-container` 設定 `max-width: calc(100vw - 28px) !important;`、`overflow-x: hidden !important;`、`box-sizing: border-box !important;`，直接與子容器強制 `max-width: 100% !important;` 與自動換行 (`white-space: normal !important; word-break: break-word !important; overflow-wrap: anywhere !important;`)，徹底消除標題與「在『Google 地圖』檢視」裁字與水平捲軸。
+      - 為 `.gm-style-iw-c` 套用 `border-radius: 16px !important;`、`box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22) !important;`、`padding: 10px 12px !important;`，壓縮桌面版氣泡窗過大 `min-height` 與多餘上下留白，並美化詳細資料與 `a[href*="maps"]` 區塊（`#F8FAFC` 背景、`1px solid #E2E8F0` 細邊框、`border-radius: 10px`）。
+      - 氣泡窗底部按鈕列（`[data-mygmap-role="infowindow-actions"]`、`[role="toolbar"]`、`#map-infowindow-edit-button`、`#map-infowindow-delete-button`、`#map-infowindow-directions-button`、`#map-infowindow-done-editing-button`、`#map-infowindow-cancel-editing-button` 等）全面加上 `flex-wrap: wrap !important;`、`gap: 6px !important;`、圓角底色與 `42px x 44px` 以上觸控尺寸，並為儲存按鈕 (`#map-infowindow-done-editing-button`) 加上 Google 藍主色標示。
+      - 新增 `body.mygmap-mobile-mode.mygmap-pin-view-hidden`（檢視模式下以 `opacity: 0; pointer-events: none;` 隱藏網頁原氣泡窗，避免與原生 `SelectedPinBottomCard` 重複遮擋地圖，同時保留 DOM 可讀寫與按鈕可觸發）與 `body.mygmap-mobile-mode.mygmap-pin-editing`（編輯模式強制氣泡窗寬度 `calc(100vw - 28px)` 並隱藏箭頭尾巴）。
+  - `app/src/main/assets/inject_script.js`：
+    - 新增 `isInfoWindowVisible()`、`tagInfoWindowSubElements()`、`findInfoWindowCloseButton()`、`isInfoWindowInEditMode()`、`extractPinRatingFromContainer()`、`extractPinCoordinatesFromContainer()`、`extractPinPhotosFromContainer()`、`collectControlButtonTexts()` 與 `extractSelectedPinUiState()`：即時偵測 `#map-infowindow-container` / `.gm-style-iw` 氣泡窗是否展開，擷取 `title`、`details`（過濾「Google 地圖詳細資料」內的「移除 / Remove」等按鈕文字）、`rating`、`coordinates`、`lat`、`lng`、`photoUrls` 與 `isEditMode`（若氣泡窗為尚未加入地圖之搜尋結果 `#addtomap-button`，維持顯示原氣泡窗與搜尋加入列）。
+    - 新增 `applyInfoWindowBodyClasses()`、`centerEditInfoWindowInViewport()` 與 `resetEditInfoWindowPosition()`：檢視模式下自動隱藏網頁氣泡窗；進入編輯模式時以 `getBoundingClientRect()` 動態計算視窗上中央偏移並以 `margin-left`/`margin-top` 將編輯氣泡窗精準置中，徹底解決點擊「編輯」後被 Google 地圖推往螢幕右外側而按不到的問題。
+    - 新增 `reportSelectedPinStateIfChanged()` 與 `scheduleSelectedPinStateChecks()`：在 `scanAndTagDom()`、`syncFromAndroid()`、`popstate`、`hashchange`、節流 `MutationObserver` 與點擊/觸控地圖後比對快照差異並呼叫 `window.AndroidBridge.onSelectedPinStateChanged(json)`。
+    - 於 `window.MyGMapHelper` 公開 `extractSelectedPinUiState()`、`triggerInfoWindowEdit()`（模擬點擊 `#map-infowindow-edit-button`）與 `closeInfoWindow()`（點擊 `.gm-style-iw button.gm-ui-hover-effect` / `#map-infowindow-close-button` / `[aria-label*="關閉"]` 等）。
+  - `app/src/main/java/com/guiterevent/mygmap/webview/MyMapJsBridge.kt` & `app/src/main/java/com/guiterevent/mygmap/webview/WebViewInjector.kt`：
+    - 新增 `SelectedPinInfo` 資料類別、`parseSelectedPinInfo(jsonStr)`（含純 JVM 單元測試正規表示式備援解析）、`@JavascriptInterface fun onSelectedPinStateChanged(infoJson: String)` 與 `onSelectedPinStateChangedCallback`。
+    - 於 `WebViewInjector` 新增 `triggerInfoWindowEdit(webView, onResult)` 與 `closeInfoWindow(webView, onResult)`。
+  - `app/src/main/java/com/guiterevent/mygmap/ui/MyMapScreen.kt`：
+    - 新增 `selectedPinInfo` 狀態並於離開編輯頁、回列表首頁、重新載入或渲染程序恢復時重設為 `null`；整合 `BackHandler` 支援返回鍵優先收合 POI 快捷卡。
+    - 實作高質感 Material 3 **`SelectedPinBottomCard`**：於 `selectedPinInfo?.visible == true && !selectedPinInfo.isEditMode && webError == null && !isOffline` 時在 `BottomActionBar` 上方透過 `AnimatedVisibility` 平滑彈出（優先於 `SearchAddToMapFloatingBar`），包含 Google 藍左側重點強調條、POI 標題、關閉按鈕、相片縮圖列（`PinPhotoThumbnail` 支援帶入 WebView Cookie 載入並點擊彈出 `PinPhotoPreviewDialog` 放大與左右切換瀏覽）、評分與詳細資料摘要卡、可點擊複製的經緯度等寬膠囊，以及單手操作快捷按鈕列（「導航」、「街景」、「編輯」、「Maps」）。
+    - 自動協調右下角「📍 標記目前位置」`ExtendedFloatingActionButton`：當 `SelectedPinBottomCard` 顯示時平滑隱藏避讓，確保 FAB 絕不遮擋卡片內容與按鈕。
+  - `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`：
+    - 新增 `parseSelectedPinInfo` 單元測試（含正常檢視、編輯模式與關閉/空值狀態），並擴充驗證 Phase 12 CSS 與 JS 必備規則。
 - **驗證結果與注意事項**：
   - 已執行 `node --check app/src/main/assets/inject_script.js` 驗證 JS 語法通過（exit code 0）。
   - 依規範未執行 `build.bat` 或 `gradlew` 編譯與 Gradle 單元測試，請使用者自行手動執行編譯與實機測試。

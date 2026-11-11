@@ -208,21 +208,123 @@ body.mygmap-mobile-mode #featurelist-pane [role="button"] {
     box-sizing: border-box !important;
 }
 
-/* 3.5 圖釘資訊氣泡窗 (InfoWindow) 行動版輸入框與儲存/編輯按鈕熱區優化 */
+/* 3.5 圖釘資訊氣泡窗 (InfoWindow) Phase 12 行動版美化、防裁字與觸控按鈕列優化 */
+body.mygmap-mobile-mode .gm-style-iw,
+body.mygmap-mobile-mode .gm-style-iw-c,
+body.mygmap-mobile-mode .gm-style-iw-d,
 body.mygmap-mobile-mode #map-infowindow-container {
-    max-width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 28px) !important;
+    overflow-x: hidden !important;
     box-sizing: border-box !important;
 }
 
+body.mygmap-mobile-mode .gm-style-iw-c {
+    border-radius: 16px !important;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22) !important;
+    padding: 10px 12px !important;
+    background-color: #ffffff !important;
+}
+
+body.mygmap-mobile-mode .gm-style-iw-d {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    padding-right: 0 !important;
+}
+
+body.mygmap-mobile-mode .gm-style-iw-c > *,
+body.mygmap-mobile-mode .gm-style-iw-d > *,
+body.mygmap-mobile-mode #map-infowindow-container > *,
+body.mygmap-mobile-mode #map-infowindow-container * {
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+body.mygmap-mobile-mode .gm-style-iw-c > div,
+body.mygmap-mobile-mode .gm-style-iw-d > div,
+body.mygmap-mobile-mode #map-infowindow-container > div {
+    overflow-x: hidden !important;
+}
+
+/* 消除桌面版氣泡窗過大的 min-height 與標題下方多餘空白（保留相片容器原有高度） */
+body.mygmap-mobile-mode #map-infowindow-container > div,
+body.mygmap-mobile-mode #map-infowindow-container [id*="infowindow"] {
+    min-height: 0 !important;
+}
+
+body.mygmap-mobile-mode [id^="map-infowindow-attr-"] {
+    margin: 2px 0 !important;
+    padding: 2px 0 !important;
+    min-height: 0 !important;
+}
+
+/* 強制標題、地址與「在『Google 地圖』檢視」連結自動換行，絕不右緣截斷 */
+body.mygmap-mobile-mode .gm-style-iw-c *,
+body.mygmap-mobile-mode #map-infowindow-container,
+body.mygmap-mobile-mode #map-infowindow-container span,
+body.mygmap-mobile-mode #map-infowindow-container p,
+body.mygmap-mobile-mode #map-infowindow-container div,
+body.mygmap-mobile-mode #map-infowindow-container a,
+body.mygmap-mobile-mode #map-infowindow-container [id^="map-infowindow-attr-"],
+body.mygmap-mobile-mode .gm-style-iw a[href*="maps"] {
+    white-space: normal !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+}
+
+/* 美化 Google 地圖詳細資料區塊與 a[href*="maps"] 連結 */
+body.mygmap-mobile-mode #map-infowindow-container [data-mygmap-role="pin-details"],
+body.mygmap-mobile-mode #map-infowindow-container [id*="details"],
+body.mygmap-mobile-mode #map-infowindow-container [class*="details"] {
+    background-color: #F8FAFC !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 10px !important;
+    padding: 8px 10px !important;
+    margin: 6px 0 !important;
+    line-height: 1.45 !important;
+    color: #334155 !important;
+}
+
+body.mygmap-mobile-mode #map-infowindow-container a[href*="maps"]:not([href*="/maps/dir"]),
+body.mygmap-mobile-mode .gm-style-iw a[href*="maps"]:not([href*="/maps/dir"]) {
+    display: block !important;
+    background-color: #F8FAFC !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 10px !important;
+    padding: 8px 10px !important;
+    margin: 6px 0 2px 0 !important;
+    line-height: 1.45 !important;
+    color: #1A73E8 !important;
+    font-weight: 500 !important;
+    text-decoration: none !important;
+}
+
+/* 編輯模式下輸入框保持舒適高度與 100% 寬度 */
 body.mygmap-mobile-mode [id^="map-infowindow-attr-"][id$="-value"],
 body.mygmap-mobile-mode #map-infowindow-container input[type="text"],
 body.mygmap-mobile-mode #map-infowindow-container textarea,
 body.mygmap-mobile-mode #map-infowindow-container [contenteditable="true"] {
     min-height: 38px !important;
+    width: 100% !important;
+    max-width: 100% !important;
     font-size: 15px !important;
     line-height: 1.4 !important;
     padding: 6px 8px !important;
     box-sizing: border-box !important;
+}
+
+/* 氣泡窗底部按鈕列對齊與防溢出折行 */
+body.mygmap-mobile-mode #map-infowindow-container [data-mygmap-role="infowindow-actions"],
+body.mygmap-mobile-mode #map-infowindow-container [role="toolbar"],
+body.mygmap-mobile-mode #map-infowindow-container [id*="buttons"],
+body.mygmap-mobile-mode #map-infowindow-container [class*="buttons"] {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-top: 8px !important;
+    padding-top: 6px !important;
 }
 
 body.mygmap-mobile-mode #map-infowindow-done-editing-button,
@@ -230,15 +332,75 @@ body.mygmap-mobile-mode #map-infowindow-edit-button,
 body.mygmap-mobile-mode #map-infowindow-delete-button,
 body.mygmap-mobile-mode #map-infowindow-cancel-editing-button,
 body.mygmap-mobile-mode #map-infowindow-directions-button,
+body.mygmap-mobile-mode #map-infowindow-style-button,
+body.mygmap-mobile-mode #map-infowindow-photo-button,
+body.mygmap-mobile-mode [id^="map-infowindow-"][id$="-button"],
 body.mygmap-mobile-mode #map-infowindow-container a[href*="/maps/dir"],
 body.mygmap-mobile-mode .gm-style-iw a[href*="/maps/dir"] {
     min-height: 42px !important;
     min-width: 44px !important;
-    padding: 6px 12px !important;
+    padding: 6px 10px !important;
+    margin: 0 !important;
+    border-radius: 10px !important;
+    background-color: #F1F5F9 !important;
+    border: 1px solid #E2E8F0 !important;
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
+    flex-shrink: 0 !important;
     box-sizing: border-box !important;
+    white-space: nowrap !important;
+}
+
+body.mygmap-mobile-mode #map-infowindow-done-editing-button {
+    background-color: #1A73E8 !important;
+    border-color: #1A73E8 !important;
+    color: #FFFFFF !important;
+    font-weight: 600 !important;
+}
+
+body.mygmap-mobile-mode .gm-style-iw button.gm-ui-hover-effect {
+    min-width: 36px !important;
+    min-height: 36px !important;
+    border-radius: 50% !important;
+}
+
+/* Phase 12：檢視模式下隱藏網頁原氣泡窗（僅顯示原生 SelectedPinBottomCard），
+ * 刻意不使用 display:none / visibility:hidden，讓 JS 仍可正常讀取 DOM 與點擊編輯按鈕 */
+body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw-a,
+body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw-t,
+body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw,
+body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw-c,
+body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw-tc,
+body.mygmap-mobile-mode.mygmap-pin-view-hidden #map-infowindow-container {
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+/* Phase 12：編輯模式下確保氣泡窗表單寬度適配手機並完整顯示於視窗中央，不被推到螢幕右外側 */
+body.mygmap-mobile-mode.mygmap-pin-editing .gm-style-iw-tc {
+    display: none !important;
+    opacity: 0 !important;
+}
+
+body.mygmap-mobile-mode.mygmap-pin-editing .gm-style-iw-c {
+    width: calc(100vw - 28px) !important;
+    min-width: min(300px, calc(100vw - 28px)) !important;
+    max-width: calc(100vw - 28px) !important;
+    max-height: 70vh !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+}
+
+body.mygmap-mobile-mode.mygmap-pin-editing .gm-style-iw-d,
+body.mygmap-mobile-mode.mygmap-pin-editing #map-infowindow-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 66vh !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
 }
 
 /* ----------------------------------------------------------------------------

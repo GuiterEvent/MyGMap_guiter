@@ -519,6 +519,9 @@
             }
         }
 
+        // 5. Phase 12：標記展開中的氣泡窗按鈕列與詳細資料區塊
+        tagInfoWindowSubElements();
+
         return foundSummary;
     }
 
@@ -598,6 +601,9 @@
         lastResizedEditorUrl: '',
         initialDrawerResizeDone: false,
         lastExternalNavTriggerAt: 0,
+        lastReportedPinStateJson: '',
+        userDismissedPinJson: '',
+        lastCloseActionAt: 0,
         initialized: false
     };
 
@@ -1137,6 +1143,29 @@
     }
 
     /**
+     * Phase 12：判斷氣泡窗元素是否真正在畫面上展開可見（排除空殼或已收合節點）
+     */
+    function isInfoWindowVisible(el) {
+        if (!el || el.id === BACKDROP_ID || !isElementUsable(el)) return false;
+        if (typeof el.getBoundingClientRect === 'function') {
+            var rect = el.getBoundingClientRect();
+            if (rect.width <= 4 || rect.height <= 4) {
+                return false;
+            }
+        }
+        var txt = ((el.innerText || el.textContent || '') + '').replace(/\s+/g, ' ').trim();
+        if (txt.length > 0) return true;
+        if (el.querySelector && el.querySelector(
+            '[id^="map-infowindow-attr-"], #map-infowindow-edit-button, ' +
+            '#map-infowindow-done-editing-button, #map-infowindow-delete-button, ' +
+            '#map-infowindow-directions-button, #addtomap-button, input, textarea'
+        )) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * 取得目前展開的圖釘氣泡窗 (InfoWindow) 容器
      */
     function findInfoWindowContainer() {
@@ -1149,11 +1178,85 @@
         ];
         for (var i = 0; i < selectors.length; i++) {
             try {
-                var el = document.querySelector(selectors[i]);
-                if (el && isElementUsable(el)) {
-                    return el;
+                var els = document.querySelectorAll(selectors[i]);
+                for (var j = 0; j < els.length; j++) {
+                    if (isInfoWindowVisible(els[j])) {
+                        return els[j];
+                    }
                 }
             } catch (_e) {}
+        }
+        return null;
+    }
+
+    /**
+     * Phase 12：標記氣泡窗內的按鈕列與詳細資料區塊供 CSS 美化排版
+     */
+    function tagInfoWindowSubElements() {
+        var container = findInfoWindowContainer();
+        if (!container) return;
+
+        var btnIds = [
+            'map-infowindow-edit-button',
+            'map-infowindow-delete-button',
+            'map-infowindow-directions-button',
+            'map-infowindow-done-editing-button',
+            'map-infowindow-cancel-editing-button',
+            'map-infowindow-style-button',
+            'map-infowindow-photo-button'
+        ];
+        for (var i = 0; i < btnIds.length; i++) {
+            var btn = document.getElementById(btnIds[i]);
+            if (btn && isElementUsable(btn) && btn.parentElement && btn.parentElement !== container) {
+                var parent = btn.parentElement;
+                if (parent !== document.body && parent.children && parent.children.length >= 2) {
+                    parent.setAttribute('data-mygmap-role', 'infowindow-actions');
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 12：尋找氣泡窗關閉按鈕
+     */
+    function findInfoWindowCloseButton() {
+        var directIds = [
+            'map-infowindow-close-button',
+            'infowindow-close-button'
+        ];
+        for (var i = 0; i < directIds.length; i++) {
+            var byId = document.getElementById(directIds[i]);
+            if (byId && isElementUsable(byId)) return byId;
+        }
+
+        var gmClose = document.querySelector('.gm-style-iw button.gm-ui-hover-effect, .gm-style-iw-c button.gm-ui-hover-effect');
+        if (gmClose && isElementUsable(gmClose)) return gmClose;
+
+        var container = findInfoWindowContainer();
+        var scopes = [];
+        if (container) scopes.push(container);
+        var gmIw = document.querySelector('.gm-style-iw-c') || document.querySelector('.gm-style-iw');
+        if (gmIw && scopes.indexOf(gmIw) === -1) scopes.push(gmIw);
+
+        var closeSelectors = [
+            'button[aria-label*="關閉"]',
+            'button[aria-label*="Close"]',
+            '[role="button"][aria-label*="關閉"]',
+            '[role="button"][aria-label*="Close"]',
+            '[data-tooltip*="關閉"]',
+            '[data-tooltip*="Close"]',
+            '[title*="關閉"]',
+            '[title*="Close"]'
+        ];
+        for (var s = 0; s < scopes.length; s++) {
+            var scope = scopes[s];
+            for (var c = 0; c < closeSelectors.length; c++) {
+                try {
+                    var btn = scope.querySelector(closeSelectors[c]);
+                    if (btn && isElementUsable(btn)) return btn;
+                } catch (_e) {}
+            }
         }
         return null;
     }
@@ -2093,6 +2196,541 @@
     }
 
     /**
+     * ========================================================================
+     * 9.5 Phase 12：偵測目前點選的 POI 氣泡窗狀態並即時回報給 AndroidBridge
+     * ========================================================================
+     */
+    function isInfoWindowInEditMode(container) {
+        if (!container) return false;
+
+        var doneBtn = document.getElementById('map-infowindow-done-editing-button');
+        if (doneBtn && isElementUsable(doneBtn)) return true;
+
+        var cancelBtn = document.getElementById('map-infowindow-cancel-editing-button');
+        if (cancelBtn && isElementUsable(cancelBtn)) return true;
+
+        var saveBtn = findInfoWindowSaveButton();
+        if (saveBtn && isElementUsable(saveBtn)) return true;
+
+        try {
+            var editables = container.querySelectorAll(
+                'input:not([type="hidden"]):not([type="checkbox"]), textarea, [contenteditable="true"]'
+            );
+            for (var i = 0; i < editables.length; i++) {
+                var ed = editables[i];
+                if (ed.id === 'mapsprosearch-field') continue;
+                if (isNodeCurrentlyEditable(ed)) {
+                    return true;
+                }
+            }
+        } catch (_e) {}
+
+        return false;
+    }
+
+    function extractPinRatingFromContainer(container) {
+        if (!container) return '';
+        try {
+            var ratingSelectors = [
+                '[aria-label*="顆星"]',
+                '[aria-label*="stars"]',
+                '[aria-label*="star"]',
+                '[class*="rating"]'
+            ];
+            for (var i = 0; i < ratingSelectors.length; i++) {
+                var el = container.querySelector(ratingSelectors[i]);
+                if (!el || !isElementUsable(el)) continue;
+                var aria = (el.getAttribute && el.getAttribute('aria-label')) || '';
+                var txt = (el.innerText || el.textContent || '') + ' ' + aria;
+                var m = txt.match(/([1-4]\.\d|5\.0)/);
+                if (m && m[1]) return m[1];
+            }
+        } catch (_e) {}
+
+        var rawText = (container.innerText || container.textContent || '') + '';
+        var starMatch = rawText.match(/([1-4]\.\d|5\.0)\s*(?:★|⭐|顆星|stars?|\(\s*[\d,]+\s*\))/i);
+        if (starMatch && starMatch[1]) {
+            return starMatch[1];
+        }
+        var lineMatch = rawText.match(/(?:^|\n)\s*([1-4]\.\d|5\.0)\s*(?:\n|$)/);
+        if (lineMatch && lineMatch[1]) {
+            return lineMatch[1];
+        }
+        return '';
+    }
+
+    function extractPinCoordinatesFromContainer(container) {
+        if (!container) return null;
+        var links = container.querySelectorAll ? container.querySelectorAll('a[href]') : [];
+        for (var i = 0; i < links.length; i++) {
+            var linkPair = parseLatLngPairFromString(links[i].getAttribute('href') || '');
+            if (linkPair) return linkPair;
+        }
+        var dataLat = container.getAttribute && container.getAttribute('data-lat');
+        var dataLng = container.getAttribute && container.getAttribute('data-lng');
+        if (dataLat && dataLng) {
+            var dataPair = parseLatLngPairFromString(dataLat + ',' + dataLng);
+            if (dataPair) return dataPair;
+        }
+        var infoText = (container.innerText || container.textContent || '');
+        return parseLatLngPairFromString(infoText);
+    }
+
+    function isBoilerplatePinLine(line, cleanTitle, rating) {
+        if (!line) return true;
+        if (cleanTitle && line === cleanTitle) return true;
+        if (rating && (line === rating || line.indexOf(rating + ' ★') === 0 || line.indexOf(rating + ' ⭐') === 0)) {
+            return true;
+        }
+        if (/^-?\d{1,2}\.\d{3,}\s*,\s*-?\d{1,3}\.\d{3,}$/.test(line)) {
+            return true;
+        }
+        if (/^\(\s*[\d,]+\s*\)$/.test(line) ||
+            /^[\d,]+\s*(?:則評論|reviews?)$/i.test(line) ||
+            /^\d+\s*(?:\/|of)\s*\d+$/i.test(line) ||
+            /^\d+\s*\(\s*共\s*\d+\s*個\s*\)$/.test(line) ||
+            /^\d+\s*\(\s*of\s+\d+\s*\)$/i.test(line) ||
+            /^共\s*\d+\s*張相片$/.test(line) ||
+            /^\d+\s*photos?$/i.test(line)) {
+            return true;
+        }
+        if (/^(移除|Remove|從\s*Google\s*地圖移除|來自\s*Google\s*地圖的詳細資料|Google\s*地圖詳細資料|Details from Google Maps|在「Google 地圖」中檢視|在『Google 地圖』檢視|在「Google 地圖」檢視|在 Google 地圖中檢視|在 Google 地圖中開啟|View in Google Maps|更多詳細資料|More details|顯示詳細資料|隱藏詳細資料|Show details|Hide details|導航|規劃路線|Directions|編輯|Edit|刪除|Delete|關閉|Close|樣式|Style|相片|Photo|新增相片|Add photo|上傳相片|新增至地圖|Add to map|儲存|Save|取消|Cancel|名稱|Name|說明|Description|網站|Website|電話|Phone|地址|Address)$/i.test(line)) {
+            return true;
+        }
+        return false;
+    }
+
+    function collectControlButtonTexts(container) {
+        var list = [];
+        if (!container || !container.querySelectorAll) return list;
+        var controls = container.querySelectorAll('button, [role="button"]');
+        for (var i = 0; i < controls.length; i++) {
+            var ctrl = controls[i];
+            if (!ctrl) continue;
+            var txt = ((ctrl.innerText || ctrl.textContent || '') + '').replace(/\s+/g, ' ').trim();
+            if (txt && txt.length <= 30 && list.indexOf(txt) === -1) {
+                list.push(txt);
+            }
+        }
+        return list;
+    }
+
+    function normalizePhotoUrl(rawUrl) {
+        if (!rawUrl) return '';
+        var s = String(rawUrl).trim();
+        if (!s || s.indexOf('blob:') === 0) return '';
+        if (s.indexOf('//') === 0) {
+            return 'https:' + s;
+        }
+        if (s.indexOf('/') === 0) {
+            return 'https://www.google.com' + s;
+        }
+        return s;
+    }
+
+    function isExcludedUiImageUrl(lowerUrl) {
+        return (
+            lowerUrl.indexOf('cleardot.gif') !== -1 ||
+            lowerUrl.indexOf('transparent.png') !== -1 ||
+            lowerUrl.indexOf('maps.gstatic.com/mapfiles/') !== -1 ||
+            lowerUrl.indexOf('gstatic.com/images/') !== -1 ||
+            lowerUrl.indexOf('data:image/gif;base64,r0lgod') === 0 ||
+            /\.svg(?:[?#]|$)/i.test(lowerUrl)
+        );
+    }
+
+    function isLikelyPhotoHostUrl(lowerUrl) {
+        return (
+            lowerUrl.indexOf('googleusercontent.com') !== -1 ||
+            lowerUrl.indexOf('usercontent.google.com') !== -1 ||
+            lowerUrl.indexOf('ggpht.com') !== -1 ||
+            lowerUrl.indexOf('photoservice') !== -1 ||
+            lowerUrl.indexOf('streetviewpixels') !== -1 ||
+            lowerUrl.indexOf('drive.google.com') !== -1 ||
+            lowerUrl.indexOf('/maps/d/') !== -1 ||
+            lowerUrl.indexOf('cbk') !== -1 ||
+            lowerUrl.indexOf('panoramio') !== -1
+        );
+    }
+
+    function extractPinPhotosFromContainer(container) {
+        var scopes = [];
+        if (container && container.querySelectorAll) scopes.push(container);
+        var gmCard = document.querySelector('.gm-style-iw-c');
+        if (gmCard && gmCard.querySelectorAll && scopes.indexOf(gmCard) === -1) {
+            scopes.push(gmCard);
+        }
+        if (scopes.length === 0) return [];
+
+        var urls = [];
+        var actionBtnSelector =
+            '[data-mygmap-role="infowindow-actions"], ' +
+            '#map-infowindow-edit-button, #map-infowindow-delete-button, ' +
+            '#map-infowindow-style-button, #map-infowindow-photo-button, ' +
+            '#map-infowindow-directions-button, #map-infowindow-done-editing-button, ' +
+            '#map-infowindow-cancel-editing-button, #map-infowindow-close-button, ' +
+            'button.gm-ui-hover-effect';
+
+        for (var s = 0; s < scopes.length; s++) {
+            var scope = scopes[s];
+            var imgs = scope.querySelectorAll('img');
+            for (var i = 0; i < imgs.length; i++) {
+                var img = imgs[i];
+                if (!img) continue;
+                if (img.closest && img.closest(actionBtnSelector)) continue;
+
+                var rawSrc = img.currentSrc ||
+                    img.src ||
+                    img.getAttribute('data-src') ||
+                    img.getAttribute('data-lazy-src') ||
+                    img.getAttribute('src') ||
+                    '';
+                var src = normalizePhotoUrl(rawSrc);
+                if (!src) continue;
+                var lower = src.toLowerCase();
+                if (isExcludedUiImageUrl(lower)) continue;
+
+                var rect = img.getBoundingClientRect ? img.getBoundingClientRect() : { width: 0, height: 0 };
+                var natW = img.naturalWidth || 0;
+                var natH = img.naturalHeight || 0;
+                var photoHost = isLikelyPhotoHostUrl(lower);
+                var inMediaBox = Boolean(
+                    img.closest && img.closest('[class*="photo"], [class*="media"], [class*="carousel"], [id*="photo"], [id*="media"], [id*="image"]')
+                );
+
+                if ((natW > 0 && natW <= 28 && natH > 0 && natH <= 28) ||
+                    (!photoHost && !inMediaBox && rect.width > 0 && rect.width <= 28 && rect.height > 0 && rect.height <= 28)) {
+                    continue;
+                }
+                if (natW === 0 && rect.width === 0 && !photoHost && !inMediaBox && lower.indexOf('data:image/') !== 0) {
+                    continue;
+                }
+                if (urls.indexOf(src) === -1) {
+                    urls.push(src);
+                }
+                if (urls.length >= 6) return urls;
+            }
+
+            var bgCandidates = scope.querySelectorAll(
+                '[style*="background-image"], [class*="photo"], [class*="media"], [class*="carousel"], [class*="image"]'
+            );
+            for (var b = 0; b < bgCandidates.length; b++) {
+                var bgEl = bgCandidates[b];
+                if (!bgEl || (bgEl.closest && bgEl.closest(actionBtnSelector))) continue;
+                var inlineBg = (bgEl.style && bgEl.style.backgroundImage) || '';
+                var compBg = '';
+                if (!inlineBg || inlineBg === 'none') {
+                    try {
+                        compBg = window.getComputedStyle(bgEl).backgroundImage || '';
+                    } catch (_e) {}
+                }
+                var bgText = inlineBg || compBg;
+                if (!bgText || bgText === 'none') continue;
+                var urlMatch = bgText.match(/url\(["']?([^"')]+)["']?\)/i);
+                if (!urlMatch || !urlMatch[1]) continue;
+
+                var bgUrl = normalizePhotoUrl(urlMatch[1]);
+                if (!bgUrl) continue;
+                var bgLower = bgUrl.toLowerCase();
+                if (isExcludedUiImageUrl(bgLower) || bgLower.indexOf('sprite') !== -1) continue;
+
+                var bgRect = bgEl.getBoundingClientRect ? bgEl.getBoundingClientRect() : { width: 0, height: 0 };
+                if (!isLikelyPhotoHostUrl(bgLower) && bgRect.width < 40 && bgRect.height < 40) continue;
+
+                if (urls.indexOf(bgUrl) === -1) {
+                    urls.push(bgUrl);
+                }
+                if (urls.length >= 6) return urls;
+            }
+        }
+        return urls;
+    }
+
+    function hasVisibleAddToMapButton(container) {
+        var btn = document.getElementById('addtomap-button');
+        if (btn && isElementUsable(btn)) {
+            if (!container || !container.contains || container.contains(btn)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function getEditInfoWindowCard() {
+        var iwCard = document.querySelector('.gm-style-iw-c');
+        if (iwCard && isElementUsable(iwCard)) return iwCard;
+        return findInfoWindowContainer();
+    }
+
+    function resetEditInfoWindowPosition() {
+        var centered = document.querySelectorAll('[data-mygmap-centered="true"]');
+        for (var i = 0; i < centered.length; i++) {
+            var el = centered[i];
+            el.style.removeProperty('margin-left');
+            el.style.removeProperty('margin-top');
+            el.removeAttribute('data-mygmap-centered');
+        }
+    }
+
+    function centerEditInfoWindowInViewport() {
+        if (!helperState.mobileMode) {
+            resetEditInfoWindowPosition();
+            return;
+        }
+        var card = getEditInfoWindowCard();
+        if (!card || !isElementUsable(card)) return;
+
+        var rect = card.getBoundingClientRect ? card.getBoundingClientRect() : null;
+        if (!rect || rect.width <= 0 || rect.height <= 0) return;
+
+        var vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 360;
+        var vh = window.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 640;
+
+        var targetLeft = Math.max(14, (vw - rect.width) / 2);
+        var targetTop = Math.max(16, Math.min(vh - rect.height - 24, (vh - rect.height) * 0.25));
+
+        var deltaX = targetLeft - rect.left;
+        var deltaY = targetTop - rect.top;
+
+        if (Math.abs(deltaX) <= 2 && Math.abs(deltaY) <= 2) {
+            card.setAttribute('data-mygmap-centered', 'true');
+            return;
+        }
+
+        var prevDx = parseFloat(card.style.marginLeft || '0') || 0;
+        var prevDy = parseFloat(card.style.marginTop || '0') || 0;
+        var nextDx = Math.round(prevDx + deltaX);
+        var nextDy = Math.round(prevDy + deltaY);
+
+        card.setAttribute('data-mygmap-centered', 'true');
+        card.style.setProperty('margin-left', nextDx + 'px', 'important');
+        card.style.setProperty('margin-top', nextDy + 'px', 'important');
+    }
+
+    function applyInfoWindowBodyClasses(state) {
+        if (!document.body) return;
+        if (!helperState.mobileMode || !state || !state.visible) {
+            document.body.classList.remove('mygmap-pin-view-hidden');
+            document.body.classList.remove('mygmap-pin-editing');
+            resetEditInfoWindowPosition();
+            return;
+        }
+
+        if (state.isEditMode) {
+            document.body.classList.remove('mygmap-pin-view-hidden');
+            document.body.classList.add('mygmap-pin-editing');
+            centerEditInfoWindowInViewport();
+        } else {
+            document.body.classList.remove('mygmap-pin-editing');
+            resetEditInfoWindowPosition();
+            document.body.classList.add('mygmap-pin-view-hidden');
+        }
+    }
+
+    function extractSelectedPinUiState() {
+        var container = findInfoWindowContainer();
+        if (!container) {
+            return { visible: false };
+        }
+
+        // 若為尚未加入地圖的搜尋結果綠釘氣泡窗 (#addtomap-button)，保留原氣泡窗與底部加入地圖列
+        if (hasVisibleAddToMapButton(container)) {
+            return { visible: false };
+        }
+
+        var isEditMode = isInfoWindowInEditMode(container);
+
+        // 1. 標題擷取：優先從屬性節點讀取，其次標題選擇器，再退回第一行非系統文字
+        var title = '';
+        var titleAttrIds = [
+            'map-infowindow-attr-名稱-value',
+            'map-infowindow-attr-name-value',
+            'map-infowindow-attr-Name-value',
+            'map-infowindow-attr-標題-value',
+            'map-infowindow-attr-title-value',
+            'map-infowindow-attr-Title-value'
+        ];
+        var usedTitleNode = null;
+        for (var t = 0; t < titleAttrIds.length; t++) {
+            var tNode = document.getElementById(titleAttrIds[t]);
+            if (tNode && isElementUsable(tNode)) {
+                var tVal = ('value' in tNode && tNode.value) ? tNode.value : (tNode.textContent || '');
+                tVal = String(tVal || '').replace(/\s+/g, ' ').trim();
+                if (tVal) {
+                    title = tVal;
+                    usedTitleNode = tNode;
+                    break;
+                }
+            }
+        }
+        if (!title) {
+            var firstAttr = container.querySelector('[id^="map-infowindow-attr-"][id$="-value"]');
+            if (firstAttr && isElementUsable(firstAttr)) {
+                var fVal = ('value' in firstAttr && firstAttr.value) ? firstAttr.value : (firstAttr.textContent || '');
+                fVal = String(fVal || '').replace(/\s+/g, ' ').trim();
+                if (fVal) {
+                    title = fVal;
+                    usedTitleNode = firstAttr;
+                }
+            }
+        }
+        if (!title) {
+            title = extractPinTitleFromContainers([container]);
+        }
+        title = String(title || '').replace(/\s+/g, ' ').trim();
+
+        // 2. 座標與評分
+        var coordPair = extractPinCoordinatesFromContainer(container);
+        var lat = coordPair ? coordPair.lat : null;
+        var lng = coordPair ? coordPair.lng : null;
+        var coordinates = (lat !== null && lng !== null)
+            ? (lat.toFixed(6) + ', ' + lng.toFixed(6))
+            : '';
+
+        var rating = extractPinRatingFromContainer(container);
+
+        // 3. 詳細資料 / 地址 / 備註整理（排除重複標題、評分數字與純座標字串）
+        var detailParts = [];
+        function pushDetailPart(rawPart) {
+            var cleaned = String(rawPart || '').replace(/\s+/g, ' ').trim();
+            if (!cleaned || isBoilerplatePinLine(cleaned, title, rating)) return;
+            for (var idx = 0; idx < detailParts.length; idx++) {
+                if (detailParts[idx] === cleaned || detailParts[idx].indexOf(cleaned) !== -1) {
+                    return;
+                }
+            }
+            detailParts.push(cleaned);
+        }
+
+        var attrNodes = container.querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
+        for (var a = 0; a < attrNodes.length; a++) {
+            var attrNode = attrNodes[a];
+            if (!isElementUsable(attrNode) || attrNode === usedTitleNode) continue;
+            var attrVal = ('value' in attrNode && attrNode.value) ? attrNode.value : (attrNode.textContent || '');
+            pushDetailPart(attrVal);
+        }
+
+        var buttonTexts = collectControlButtonTexts(container);
+        var rawLines = ((container.innerText || container.textContent || '') + '').split(/\r?\n/);
+        for (var l = 0; l < rawLines.length; l++) {
+            var line = rawLines[l].replace(/\s+/g, ' ').trim();
+            if (!line || buttonTexts.indexOf(line) !== -1) {
+                continue;
+            }
+            // 移除行內夾帶的評分前綴（如 "4.6 ★ "）
+            if (rating && line.indexOf(rating) === 0 && line.length <= rating.length + 6) {
+                continue;
+            }
+            pushDetailPart(line);
+            if (detailParts.length >= 4) break;
+        }
+
+        var details = detailParts.join(' • ');
+        if (details.length > 180) {
+            details = details.slice(0, 177) + '…';
+        }
+
+        var photoUrls = extractPinPhotosFromContainer(container);
+
+        return {
+            visible: true,
+            title: title,
+            details: details,
+            rating: rating,
+            coordinates: coordinates,
+            lat: lat,
+            lng: lng,
+            isEditMode: Boolean(isEditMode),
+            photoUrls: photoUrls
+        };
+    }
+
+    function reportSelectedPinStateIfChanged(forceReport) {
+        var state = extractSelectedPinUiState();
+        applyInfoWindowBodyClasses(state);
+        var jsonStr = JSON.stringify(state);
+
+        if (!state.visible) {
+            helperState.userDismissedPinJson = '';
+        } else if (!forceReport && helperState.userDismissedPinJson) {
+            if (jsonStr === helperState.userDismissedPinJson) {
+                return state;
+            }
+            helperState.userDismissedPinJson = '';
+        }
+
+        if (forceReport || jsonStr !== helperState.lastReportedPinStateJson) {
+            helperState.lastReportedPinStateJson = jsonStr;
+            try {
+                if (window.AndroidBridge && typeof window.AndroidBridge.onSelectedPinStateChanged === 'function') {
+                    window.AndroidBridge.onSelectedPinStateChanged(jsonStr);
+                }
+            } catch (err) {
+                console.warn('[MyGMap] AndroidBridge.onSelectedPinStateChanged error:', err);
+            }
+        }
+        return state;
+    }
+
+    function simulateEmptyMapDismissClick() {
+        if (helperState.activeTool === 'addMarker') return false;
+        var vw = window.innerWidth || 360;
+        var vh = window.innerHeight || 640;
+        var probes = [
+            [18, Math.max(96, Math.round(vh * 0.22))],
+            [18, Math.max(120, vh - 220)],
+            [Math.max(40, vw - 22), Math.max(120, Math.round(vh * 0.28))]
+        ];
+        for (var i = 0; i < probes.length; i++) {
+            var x = probes[i][0];
+            var y = probes[i][1];
+            var el = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+            if (!el || !el.closest) continue;
+            if (el.closest('#map-infowindow-container, .gm-style-iw, [role="button"], button, a, input, [data-mygmap-role="layer-panel"]')) {
+                continue;
+            }
+            if (el.closest('.gm-style, #map-canvas, #lyra-canvas, [data-mygmap-role="map-canvas"]')) {
+                var types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+                for (var t = 0; t < types.length; t++) {
+                    var type = types[t];
+                    var isPointer = type.indexOf('pointer') === 0;
+                    var isDown = type.indexOf('down') !== -1;
+                    var evtInit = {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        button: 0,
+                        buttons: isDown ? 1 : 0
+                    };
+                    try {
+                        var evt;
+                        if (isPointer && typeof window.PointerEvent === 'function') {
+                            evtInit.pointerId = 1;
+                            evtInit.pointerType = 'touch';
+                            evtInit.isPrimary = true;
+                            evt = new PointerEvent(type, evtInit);
+                        } else {
+                            evt = new MouseEvent(type, evtInit);
+                        }
+                        el.dispatchEvent(evt);
+                    } catch (_e) {}
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function scheduleSelectedPinStateChecks() {
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 80);
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 200);
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 450);
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 800);
+    }
+
+    /**
      * 10. 掛載與導出 window.MyGMapHelper 公開 API
      */
     window.MyGMapHelper = {
@@ -2117,6 +2755,52 @@
         /** Phase 5：提取目前網頁的 mid、選取圖釘與搜尋框座標供跳轉官方 Google Maps App 使用 */
         extractNavigationContext: extractNavigationContext,
 
+        /** Phase 12：擷取目前選取 POI 氣泡窗顯示狀態與完整資訊 */
+        extractSelectedPinUiState: extractSelectedPinUiState,
+
+        /** Phase 12：從原生卡片觸發目前氣泡窗進入編輯模式 */
+        triggerInfoWindowEdit: function () {
+            var editBtn = findInfoWindowEditButton();
+            if (!editBtn) {
+                return false;
+            }
+            var ok = simulateClick(editBtn);
+            scheduleSelectedPinStateChecks();
+            setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 1100);
+            return ok;
+        },
+
+        /** Phase 12：從原生卡片關閉目前網頁氣泡窗 */
+        closeInfoWindow: function () {
+            helperState.lastCloseActionAt = Date.now();
+            var currentState = extractSelectedPinUiState();
+            helperState.userDismissedPinJson = currentState.visible
+                ? JSON.stringify(currentState)
+                : (helperState.lastReportedPinStateJson || '');
+
+            var closeBtn = findInfoWindowCloseButton();
+            if (closeBtn) {
+                var ok = simulateClick(closeBtn);
+                scheduleSelectedPinStateChecks();
+                return ok;
+            }
+            try {
+                var escEvt = new KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    code: 'Escape',
+                    keyCode: 27,
+                    which: 27,
+                    bubbles: true,
+                    cancelable: true
+                });
+                document.dispatchEvent(escEvt);
+            } catch (_e) {}
+
+            var dismissedByMapClick = simulateEmptyMapDismissClick();
+            scheduleSelectedPinStateChecks();
+            return dismissedByMapClick;
+        },
+
         /** 重新掃描並標記所有關鍵 DOM 節點 */
         scanAndTagDom: function () {
             ensureViewportMeta();
@@ -2124,6 +2808,7 @@
             applyBodyClasses();
             reportPageModeIfNeeded(false);
             scheduleMapResizeIfNeeded(false);
+            reportSelectedPinStateIfChanged(false);
             return summary;
         },
 
@@ -2135,6 +2820,7 @@
             helperState.mobileMode = Boolean(enabled);
             applyBodyClasses();
             reportMobileModeState();
+            reportSelectedPinStateIfChanged(false);
             try {
                 window.dispatchEvent(new Event('resize'));
             } catch (_e) {}
@@ -2326,6 +3012,7 @@
             reportMobileModeState();
             reportInspectModeState();
             reportActiveToolState();
+            reportSelectedPinStateIfChanged(true);
             return {
                 isEditorPage: isEditor,
                 mobileMode: helperState.mobileMode,
@@ -2352,6 +3039,55 @@
         // Phase 11：Capture 階段偵測氣泡窗 / 詳情卡內的導航連結與按鈕點擊
         document.addEventListener('click', handleDocumentNavigationClick, true);
 
+        // Phase 12：使用 Capture 階段監聽點擊/輕觸（防止 Google Maps stopPropagation 吃掉事件），
+        // 輕點地圖時立即重設手動關閉標記，確保按 × 後再點同一個圖釘也能立刻重新開啟說明卡
+        var pinTapStart = null;
+        var lastDragEndedAt = 0;
+        document.addEventListener('touchstart', function (e) {
+            if (e && e.touches && e.touches.length === 1) {
+                pinTapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            } else {
+                pinTapStart = null;
+            }
+        }, { capture: true, passive: true });
+        document.addEventListener('click', function () {
+            if (helperState.inspectMode) return;
+            var now = Date.now();
+            if (now - (helperState.lastCloseActionAt || 0) < 300) return;
+            if (now - lastDragEndedAt < 300) return;
+            helperState.userDismissedPinJson = '';
+            helperState.lastReportedPinStateJson = '';
+            scheduleSelectedPinStateChecks();
+        }, true);
+        document.addEventListener('touchend', function (e) {
+            if (helperState.inspectMode) return;
+            var now = Date.now();
+            if (now - (helperState.lastCloseActionAt || 0) < 300) {
+                pinTapStart = null;
+                return;
+            }
+            var isTap = true;
+            if (pinTapStart && e && e.changedTouches && e.changedTouches.length === 1) {
+                var dx = e.changedTouches[0].clientX - pinTapStart.x;
+                var dy = e.changedTouches[0].clientY - pinTapStart.y;
+                if (Math.sqrt(dx * dx + dy * dy) > 16) {
+                    isTap = false;
+                    lastDragEndedAt = now;
+                }
+            }
+            pinTapStart = null;
+            if (isTap) {
+                helperState.userDismissedPinJson = '';
+                helperState.lastReportedPinStateJson = '';
+                scheduleSelectedPinStateChecks();
+            }
+        }, { capture: true, passive: true });
+        document.addEventListener('load', function (e) {
+            if (e && e.target && e.target.tagName === 'IMG' && isInsideInfoOrDetailCard(e.target)) {
+                scheduleSelectedPinStateChecks();
+            }
+        }, true);
+
         // 監聽歷史紀錄與網址變化
         window.addEventListener('popstate', function () {
             setTimeout(function () {
@@ -2359,6 +3095,7 @@
                 applyBodyClasses();
                 reportPageModeIfNeeded(false);
                 scheduleMapResizeIfNeeded(false);
+                reportSelectedPinStateIfChanged(false);
             }, 150);
         });
 
@@ -2368,6 +3105,7 @@
                 applyBodyClasses();
                 reportPageModeIfNeeded(false);
                 scheduleMapResizeIfNeeded(false);
+                reportSelectedPinStateIfChanged(false);
             }, 150);
         });
 
@@ -2381,6 +3119,7 @@
                 applyBodyClasses();
                 reportPageModeIfNeeded(false);
                 scheduleMapResizeIfNeeded(false);
+                reportSelectedPinStateIfChanged(false);
             }, 350);
         });
 
@@ -2398,4 +3137,5 @@
     applyBodyClasses();
     reportPageModeIfNeeded(true);
     scheduleMapResizeIfNeeded(false);
+    reportSelectedPinStateIfChanged(false);
 })();

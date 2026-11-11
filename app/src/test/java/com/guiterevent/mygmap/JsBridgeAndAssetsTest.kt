@@ -2,6 +2,8 @@ package com.guiterevent.mygmap
 
 import com.guiterevent.mygmap.webview.MyMapJsBridge
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -114,6 +116,20 @@ class JsBridgeAndAssetsTest {
         assertTrue("JS must detect #map-infowindow-directions-button", jsText.contains("#map-infowindow-directions-button"))
         assertTrue("CSS must style #map-infowindow-directions-button", cssText.contains("#map-infowindow-directions-button"))
         assertTrue("CSS must style InfoWindow /maps/dir links", cssText.contains("a[href*=\"/maps/dir\"]"))
+
+        // Phase 12 required POI InfoWindow Beautification & Selected Pin Bridge State
+        assertTrue("CSS must constrain .gm-style-iw-c and .gm-style-iw-d width", cssText.contains(".gm-style-iw-c") && cssText.contains(".gm-style-iw-d"))
+        assertTrue("CSS must enforce max-width calc(100vw - 28px)", cssText.contains("calc(100vw - 28px)"))
+        assertTrue("CSS must enforce word wrapping inside InfoWindow", cssText.contains("overflow-wrap: anywhere !important"))
+        assertTrue("CSS must enable flex-wrap for InfoWindow buttons", cssText.contains("flex-wrap: wrap !important"))
+        assertTrue("CSS must style InfoWindow maps links", cssText.contains("a[href*=\"maps\"]"))
+        assertTrue("JS must define extractSelectedPinUiState", jsText.contains("extractSelectedPinUiState"))
+        assertTrue("JS must report onSelectedPinStateChanged", jsText.contains("onSelectedPinStateChanged"))
+        assertTrue("JS must expose triggerInfoWindowEdit", jsText.contains("triggerInfoWindowEdit"))
+        assertTrue("JS must expose closeInfoWindow", jsText.contains("closeInfoWindow"))
+        assertTrue("CSS must support hiding web InfoWindow in view mode", cssText.contains("mygmap-pin-view-hidden"))
+        assertTrue("CSS must support centering edit InfoWindow", cssText.contains("mygmap-pin-editing"))
+        assertTrue("JS must define centerEditInfoWindowInViewport", jsText.contains("centerEditInfoWindowInViewport"))
     }
 
     @Test
@@ -142,5 +158,61 @@ class JsBridgeAndAssetsTest {
         assertEquals("象山觀景台", status.title)
         assertEquals("夜景拍攝點", status.description)
         assertEquals("象山觀景台 - 夜景拍攝點", status.clipboardText)
+    }
+
+    @Test
+    fun `parseSelectedPinInfo parses visible, edit mode and hidden states`() {
+        val visibleJson = """
+            {
+              "visible": true,
+              "title": "大安森林公園音樂露台",
+              "details": "台北市大安區新生南路二段1號",
+              "rating": "4.7",
+              "coordinates": "25.029654, 121.536210",
+              "lat": 25.029654,
+              "lng": 121.536210,
+              "isEditMode": false,
+              "photoUrls": ["https://lh3.googleusercontent.com/p/photo1", "https://lh3.googleusercontent.com/p/photo2"]
+            }
+        """.trimIndent()
+
+        val visiblePin = MyMapJsBridge.parseSelectedPinInfo(visibleJson)
+        assertTrue(visiblePin.visible)
+        assertEquals("大安森林公園音樂露台", visiblePin.title)
+        assertEquals("台北市大安區新生南路二段1號", visiblePin.details)
+        assertEquals("4.7", visiblePin.rating)
+        assertEquals("25.029654, 121.536210", visiblePin.coordinates)
+        assertEquals(25.029654, visiblePin.lat!!, 0.000001)
+        assertEquals(121.536210, visiblePin.lng!!, 0.000001)
+        assertFalse(visiblePin.isEditMode)
+        assertEquals(2, visiblePin.photoUrls.size)
+        assertEquals("https://lh3.googleusercontent.com/p/photo1", visiblePin.photoUrls[0])
+
+        val editModeJson = """
+            {
+              "visible": true,
+              "title": "編輯中景點",
+              "details": "",
+              "rating": "",
+              "coordinates": "",
+              "lat": null,
+              "lng": null,
+              "isEditMode": true
+            }
+        """.trimIndent()
+
+        val editingPin = MyMapJsBridge.parseSelectedPinInfo(editModeJson)
+        assertTrue(editingPin.visible)
+        assertTrue(editingPin.isEditMode)
+        assertEquals("編輯中景點", editingPin.title)
+        assertNull(editingPin.lat)
+        assertNull(editingPin.lng)
+
+        val hiddenPin = MyMapJsBridge.parseSelectedPinInfo("""{"visible": false}""")
+        assertFalse(hiddenPin.visible)
+        assertEquals("", hiddenPin.title)
+
+        val blankPin = MyMapJsBridge.parseSelectedPinInfo("")
+        assertFalse(blankPin.visible)
     }
 }

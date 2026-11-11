@@ -8,6 +8,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.net.ConnectivityManager
 import android.net.Network
@@ -16,6 +17,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
+import android.util.Base64
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -30,13 +32,26 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -48,17 +63,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Streetview
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -70,8 +93,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,7 +104,11 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
@@ -89,6 +118,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.ViewCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -104,7 +135,12 @@ import com.guiterevent.mygmap.webview.MapExportAndIntentHelper
 import com.guiterevent.mygmap.webview.MapNavigationContext
 import com.guiterevent.mygmap.webview.MyMapJsBridge
 import com.guiterevent.mygmap.webview.MyMapWebViewClient
+import com.guiterevent.mygmap.webview.SelectedPinInfo
 import com.guiterevent.mygmap.webview.WebViewInjector
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 
 /**
@@ -173,6 +209,13 @@ fun MyMapScreen(
     }
     var pendingNativeGpsPinRequest by remember { mutableStateOf(false) }
     var openDialogAfterPermissionGranted by remember { mutableStateOf(true) }
+
+    // Phase 12：目前點選圖釘氣泡窗即時偵測狀態（控制原生 Material 3 底部 POI 資訊快捷卡）
+    var selectedPinInfo by remember { mutableStateOf<SelectedPinInfo?>(null) }
+    val activePinForCard = selectedPinInfo?.takeIf {
+        it.visible && !it.isEditMode && webError == null && !isOffline
+    }
+    val showSelectedPinCard = activePinForCard != null
 
     val currentMobileMode by rememberUpdatedState(isMobileMode)
     val currentDrawerOpen by rememberUpdatedState(isDrawerOpen)
@@ -339,6 +382,7 @@ fun MyMapScreen(
         isDrawerOpen = false
         isAddMarkerMode = false
         activeSearchQuery = null
+        selectedPinInfo = null
         val nextProfile = MyMapWebViewClient.resetGoogleAuthStateAndReload(wv)
         activeAuthProfile = nextProfile
         currentUrl = MyMapWebViewClient.GOOGLE_SERVICE_LOGIN_URL
@@ -390,6 +434,10 @@ fun MyMapScreen(
             isAddMarkerMode && wv != null -> {
                 isAddMarkerMode = false
                 WebViewInjector.activatePanTool(wv)
+            }
+            showSelectedPinCard && wv != null -> {
+                selectedPinInfo = null
+                WebViewInjector.closeInfoWindow(wv)
             }
             wv != null && wv.canGoBack() -> {
                 wv.goBack()
@@ -564,6 +612,7 @@ fun MyMapScreen(
                         isDrawerOpen = false
                         isAddMarkerMode = false
                         activeSearchQuery = null
+                        selectedPinInfo = null
                         webViewRef?.let { wv ->
                             MyMapWebViewClient.loadUrlWithLockedUa(wv, MyMapWebViewClient.MY_MAPS_HOME_URL)
                         }
@@ -572,6 +621,7 @@ fun MyMapScreen(
                         isOffline = !MyMapWebViewClient.isNetworkAvailable(context)
                         webError = null
                         isAddMarkerMode = false
+                        selectedPinInfo = null
                         reloadOrRecover()
                     }
                 )
@@ -726,6 +776,7 @@ fun MyMapScreen(
                     isDrawerOpen = false
                     isAddMarkerMode = false
                     activeSearchQuery = null
+                    selectedPinInfo = null
                     webViewRef?.let { wv ->
                         MyMapWebViewClient.loadUrlWithLockedUa(wv, MyMapWebViewClient.MY_MAPS_HOME_URL)
                     }
@@ -790,38 +841,45 @@ fun MyMapScreen(
             )
         },
         floatingActionButton = {
-            // Phase 4 / Phase 9：右下方「📍 標記目前位置」FAB 全程 100% 常駐顯示（不再依 uaMode 隱藏）
-            ExtendedFloatingActionButton(
-                onClick = { onMarkCurrentLocationClick() },
-                modifier = Modifier.padding(
-                    bottom = if (activeSearchQuery != null && webError == null) 66.dp else 0.dp
-                ),
-                containerColor = Color(0xFF0F766E),
-                contentColor = Color.White,
-                shape = RoundedCornerShape(16.dp),
-                icon = {
-                    if (isLocatingGps) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.4.dp,
-                            color = Color.White
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.MyLocation,
-                            contentDescription = "標記目前位置",
-                            modifier = Modifier.size(22.dp)
+            // Phase 4 / Phase 9 / Phase 12：右下方「📍 標記目前位置」FAB 全程常駐，
+            // 當原生 POI 底部快捷卡展開時自動隱藏避讓，確保絕不壓在卡片文字或按鈕上方
+            AnimatedVisibility(
+                visible = !showSelectedPinCard,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut()
+            ) {
+                ExtendedFloatingActionButton(
+                    onClick = { onMarkCurrentLocationClick() },
+                    modifier = Modifier.padding(
+                        bottom = if (activeSearchQuery != null && webError == null) 66.dp else 0.dp
+                    ),
+                    containerColor = Color(0xFF0F766E),
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(16.dp),
+                    icon = {
+                        if (isLocatingGps) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.4.dp,
+                                color = Color.White
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.MyLocation,
+                                contentDescription = "標記目前位置",
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    },
+                    text = {
+                        Text(
+                            text = if (isLocatingGps) "📡 GPS 定位中…" else "📍 標記目前位置",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
-                },
-                text = {
-                    Text(
-                        text = if (isLocatingGps) "📡 GPS 定位中…" else "📍 標記目前位置",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            )
+                )
+            }
         }
     ) { innerPadding ->
         Box(
@@ -905,13 +963,14 @@ fun MyMapScreen(
                             )
                         }
 
-                        // 掛載 Phase 2 ~ Phase 4 JS Bridge (window.AndroidBridge)
+                        // 掛載 Phase 2 ~ Phase 12 JS Bridge (window.AndroidBridge)
                         val jsBridge = MyMapJsBridge(
                             onPageModeChangedCallback = { editorMode ->
                                 isEditorPage = editorMode
                                 if (!editorMode) {
                                     isAddMarkerMode = false
                                     activeSearchQuery = null
+                                    selectedPinInfo = null
                                 }
                             },
                             onDomInspectedCallback = { domInfo ->
@@ -980,6 +1039,9 @@ fun MyMapScreen(
                                         fallbackGps = currentGpsCoordinates
                                     )
                                 }
+                            },
+                            onSelectedPinStateChangedCallback = { pinInfo ->
+                                selectedPinInfo = if (pinInfo.visible) pinInfo else null
                             }
                         )
                         addJavascriptInterface(jsBridge, MyMapJsBridge.BRIDGE_NAME)
@@ -1013,6 +1075,7 @@ fun MyMapScreen(
                             onRenderProcessGoneRecovered = { view, _ ->
                                 isLoading = false
                                 webError = null
+                                selectedPinInfo = null
                                 val recoveryUrl = MyMapWebViewClient.resolveRecoveryUrl(
                                     view?.url,
                                     currentUrl
@@ -1181,7 +1244,7 @@ fun MyMapScreen(
 
             // Phase 3：搜尋後的一鍵「➕ 加入地圖 (clickAddToMap())」快捷浮動面板
             AnimatedVisibility(
-                visible = activeSearchQuery != null && webError == null,
+                visible = activeSearchQuery != null && webError == null && !showSelectedPinCard,
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
                 SearchAddToMapFloatingBar(
@@ -1212,6 +1275,74 @@ fun MyMapScreen(
                         activeSearchQuery = null
                     }
                 )
+            }
+
+            // Phase 12：原生 Material 3 底部 POI 資訊快捷卡（單手好按：導航 / 街景 / 編輯 / 在 Maps 開啟 / 複製座標）
+            AnimatedVisibility(
+                visible = showSelectedPinCard,
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                activePinForCard?.let { pin ->
+                    val buildNavContext = {
+                        MapNavigationContext(
+                            pageUrl = currentUrl,
+                            mid = MapExportAndIntentHelper.extractMidFromUrl(currentUrl).orEmpty(),
+                            selectedPinTitle = pin.title,
+                            selectedPinLat = pin.lat,
+                            selectedPinLng = pin.lng
+                        )
+                    }
+                    SelectedPinBottomCard(
+                        pinInfo = pin,
+                        onClose = {
+                            selectedPinInfo = null
+                            webViewRef?.let { wv -> WebViewInjector.closeInfoWindow(wv) }
+                        },
+                        onCopyCoordinates = { coordText ->
+                            copyToClipboard(context, "POI Coordinates", coordText)
+                            Toast.makeText(context, "📋 已複製座標：$coordText", Toast.LENGTH_SHORT).show()
+                        },
+                        onNavigate = {
+                            MapExportAndIntentHelper.launchGoogleMapsApp(
+                                context = context,
+                                mode = GoogleMapsLaunchMode.NAVIGATION,
+                                navContext = buildNavContext(),
+                                fallbackGps = currentGpsCoordinates
+                            )
+                        },
+                        onStreetView = {
+                            MapExportAndIntentHelper.launchGoogleMapsApp(
+                                context = context,
+                                mode = GoogleMapsLaunchMode.STREET_VIEW,
+                                navContext = buildNavContext(),
+                                fallbackGps = currentGpsCoordinates
+                            )
+                        },
+                        onEdit = {
+                            webViewRef?.let { wv ->
+                                WebViewInjector.triggerInfoWindowEdit(wv) { ok ->
+                                    if (!ok) {
+                                        Toast.makeText(
+                                            context,
+                                            "⚠️ 無法自動切換至氣泡窗編輯模式，請直接點擊網頁上的鉛筆按鈕",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                        },
+                        onOpenInMaps = {
+                            MapExportAndIntentHelper.launchGoogleMapsApp(
+                                context = context,
+                                mode = GoogleMapsLaunchMode.PLACE_PIN,
+                                navContext = buildNavContext(),
+                                fallbackGps = currentGpsCoordinates
+                            )
+                        }
+                    )
+                }
             }
 
             // Phase 5：離線防呆與網頁載入異常提示面板（支援重新整理與直接跳轉官方 Google Maps App）
@@ -1903,6 +2034,611 @@ private fun InspectDetailRow(label: String, value: String) {
             fontFamily = FontFamily.Monospace,
             color = Color(0xFF0F172A)
         )
+    }
+}
+
+/**
+ * Phase 12：原生 Material 3 底部 POI 資訊快捷卡 (`SelectedPinBottomCard`)
+ *
+ * 當使用者點選地圖上的任意 POI 圖釘並展開氣泡窗（且未進入編輯模式）時，
+ * 於底部工具列正上方顯示單手好按的卡片：提供完整圖釘名稱、詳細摘要、可點擊複製的座標膠囊，
+ * 以及「🧭 導航」、「🏙️ 街景」、「✏️ 編輯」、「🗺️ 在 Maps 開啟」快捷按鈕。
+ */
+@Composable
+private fun SelectedPinBottomCard(
+    pinInfo: SelectedPinInfo,
+    onClose: () -> Unit,
+    onCopyCoordinates: (String) -> Unit,
+    onNavigate: () -> Unit,
+    onStreetView: () -> Unit,
+    onEdit: () -> Unit,
+    onOpenInMaps: () -> Unit
+) {
+    val hasValidCoords = pinInfo.lat != null &&
+        pinInfo.lng != null &&
+        LocationHelper.isValidLatLng(pinInfo.lat, pinInfo.lng)
+    val coordDisplay = pinInfo.coordinates.trim().ifBlank {
+        if (hasValidCoords) {
+            String.format(Locale.US, "%.6f, %.6f", pinInfo.lat!!, pinInfo.lng!!)
+        } else {
+            ""
+        }
+    }
+    var previewPhotoIndex by remember(pinInfo.photoUrls) { mutableStateOf<Int?>(null) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White,
+        tonalElevation = 4.dp,
+        shadowElevation = 10.dp,
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min)
+        ) {
+            // 左側 Google 藍重點強調條
+            Box(
+                modifier = Modifier
+                    .width(5.dp)
+                    .fillMaxHeight()
+                    .background(Color(0xFF1A73E8))
+            )
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 標題列：圖釘徽章 + 名稱 + 右上角關閉按鈕
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFFE8F0FE),
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Place,
+                                contentDescription = null,
+                                tint = Color(0xFF1A73E8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = pinInfo.title.trim().ifBlank { "已選取的地圖圖釘" },
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        lineHeight = 20.sp,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(top = 2.dp)
+                    )
+
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "關閉圖釘快捷卡",
+                            tint = Color(0xFF64748B),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                // 相片縮圖列（若圖釘附帶相片，點擊可放大檢視）
+                if (pinInfo.photoUrls.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        pinInfo.photoUrls.forEachIndexed { idx, photoUrl ->
+                            PinPhotoThumbnail(
+                                photoUrl = photoUrl,
+                                onClick = { previewPhotoIndex = idx }
+                            )
+                        }
+                    }
+                }
+
+                // 資訊摘要區：評分 / 地址詳細資料 + 可點擊複製經緯度膠囊
+                val hasRating = pinInfo.rating.isNotBlank()
+                val hasDetails = pinInfo.details.isNotBlank()
+                if (hasRating || hasDetails) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFFF8FAFC),
+                        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (hasRating) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFFFEF3C7)
+                                ) {
+                                    Text(
+                                        text = "⭐ ${pinInfo.rating.trim()}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF92400E),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            if (hasDetails) {
+                                Text(
+                                    text = pinInfo.details.trim(),
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp,
+                                    color = Color(0xFF334155),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (coordDisplay.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xFFEFF6FF),
+                        border = BorderStroke(1.dp, Color(0xFFBFDBFE)),
+                        modifier = Modifier.clickable { onCopyCoordinates(coordDisplay) }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "複製座標",
+                                tint = Color(0xFF1D4ED8),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = coordDisplay,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFF1E40AF)
+                            )
+                        }
+                    }
+                }
+
+                // 單手快捷操作按鈕列
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 1. 導航（主色調醒目實心按鈕）
+                    Button(
+                        onClick = onNavigate,
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF1A73E8),
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Navigation,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "導航",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+
+                    // 2. 街景（若有有效座標）
+                    if (hasValidCoords) {
+                        FilledTonalButton(
+                            onClick = onStreetView,
+                            shape = RoundedCornerShape(50),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = Color(0xFFF0FDF4),
+                                contentColor = Color(0xFF166534)
+                            ),
+                            contentPadding = PaddingValues(horizontal = 11.dp, vertical = 8.dp),
+                            modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Streetview,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "街景",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1
+                            )
+                        }
+                    }
+
+                    // 3. 編輯
+                    FilledTonalButton(
+                        onClick = onEdit,
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFFF1F5F9),
+                            contentColor = Color(0xFF0F172A)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 11.dp, vertical = 8.dp),
+                        modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "編輯",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
+
+                    // 4. 在 Maps 開啟
+                    FilledTonalButton(
+                        onClick = onOpenInMaps,
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFFEFF6FF),
+                            contentColor = Color(0xFF1D4ED8)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 11.dp, vertical = 8.dp),
+                        modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Map,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Maps",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    val activePreviewIdx = previewPhotoIndex
+    if (activePreviewIdx != null && activePreviewIdx in pinInfo.photoUrls.indices) {
+        PinPhotoPreviewDialog(
+            title = pinInfo.title.trim().ifBlank { "圖釘相片" },
+            photoUrls = pinInfo.photoUrls,
+            initialIndex = activePreviewIdx,
+            onDismiss = { previewPhotoIndex = null }
+        )
+    }
+}
+
+@Composable
+private fun PinPhotoThumbnail(
+    photoUrl: String,
+    onClick: () -> Unit
+) {
+    var bitmap by remember(photoUrl) { mutableStateOf<ImageBitmap?>(null) }
+    var loadFailed by remember(photoUrl) { mutableStateOf(false) }
+
+    LaunchedEffect(photoUrl) {
+        loadFailed = false
+        bitmap = loadPinPhotoBitmap(photoUrl, maxDimensionPx = 320)?.also { } ?: run {
+            loadFailed = true
+            null
+        }
+    }
+
+    if (loadFailed) return
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xFFF1F5F9),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        modifier = Modifier
+            .size(width = 84.dp, height = 62.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = bitmap != null) { onClick() }
+    ) {
+        val loaded = bitmap
+        if (loaded != null) {
+            Image(
+                bitmap = loaded,
+                contentDescription = "圖釘相片縮圖",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xFF94A3B8)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PinPhotoPreviewDialog(
+    title: String,
+    photoUrls: List<String>,
+    initialIndex: Int,
+    onDismiss: () -> Unit
+) {
+    var currentIndex by remember(photoUrls, initialIndex) {
+        mutableIntStateOf(initialIndex.coerceIn(0, (photoUrls.size - 1).coerceAtLeast(0)))
+    }
+    val currentUrl = photoUrls.getOrNull(currentIndex).orEmpty()
+    var fullBitmap by remember(currentUrl) { mutableStateOf<ImageBitmap?>(null) }
+    var loadFailed by remember(currentUrl) { mutableStateOf(false) }
+
+    LaunchedEffect(currentUrl) {
+        fullBitmap = null
+        loadFailed = false
+        val loaded = loadPinPhotoBitmap(currentUrl, maxDimensionPx = 1600)
+        if (loaded != null) {
+            fullBitmap = loaded
+        } else {
+            loadFailed = true
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0xFF0F172A),
+            shadowElevation = 12.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = title,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (photoUrls.size > 1) {
+                        Text(
+                            text = "${currentIndex + 1} / ${photoUrls.size}",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "關閉相片檢視",
+                            tint = Color.White
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(320.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF1E293B)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val loaded = fullBitmap
+                    when {
+                        loaded != null -> {
+                            Image(
+                                bitmap = loaded,
+                                contentDescription = title,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        loadFailed -> {
+                            Text(
+                                text = "⚠️ 相片載入失敗",
+                                color = Color(0xFFCBD5E1),
+                                fontSize = 13.sp
+                            )
+                        }
+                        else -> {
+                            CircularProgressIndicator(color = Color.White)
+                        }
+                    }
+
+                    if (photoUrls.size > 1) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = Color(0x88000000)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        currentIndex = if (currentIndex > 0) {
+                                            currentIndex - 1
+                                        } else {
+                                            photoUrls.size - 1
+                                        }
+                                    },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                        contentDescription = "上一張",
+                                        tint = Color.White
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = Color(0x88000000)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        currentIndex = (currentIndex + 1) % photoUrls.size
+                                    },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                        contentDescription = "下一張",
+                                        tint = Color.White
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private suspend fun loadPinPhotoBitmap(
+    photoUrl: String,
+    maxDimensionPx: Int
+): ImageBitmap? = withContext(Dispatchers.IO) {
+    val trimmed = photoUrl.trim()
+    if (trimmed.isEmpty()) return@withContext null
+
+    try {
+        val rawBytes: ByteArray = if (trimmed.startsWith("data:image/", ignoreCase = true)) {
+            val commaIdx = trimmed.indexOf(',')
+            if (commaIdx <= 0) return@withContext null
+            Base64.decode(trimmed.substring(commaIdx + 1), Base64.DEFAULT)
+        } else {
+            var currentUrl = when {
+                trimmed.startsWith("//") -> "https:$trimmed"
+                trimmed.startsWith("/") -> "https://www.google.com$trimmed"
+                else -> trimmed
+            }
+            var fetchedBytes: ByteArray? = null
+            for (hop in 0..5) {
+                val urlObj = URL(currentUrl)
+                val conn = (urlObj.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8_000
+                    readTimeout = 8_000
+                    instanceFollowRedirects = false
+                    setRequestProperty("User-Agent", MyMapWebViewClient.DESKTOP_CHROME_UA)
+                    setRequestProperty("Referer", "https://www.google.com/maps/d/")
+                    setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+                    val cookies = try {
+                        CookieManager.getInstance().getCookie(currentUrl)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    if (!cookies.isNullOrBlank()) {
+                        setRequestProperty("Cookie", cookies)
+                    }
+                }
+                try {
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val location = conn.getHeaderField("Location")?.trim()
+                        if (location.isNullOrEmpty()) break
+                        currentUrl = URL(urlObj, location).toString()
+                        continue
+                    }
+                    if (code in 200..299) {
+                        fetchedBytes = conn.inputStream.use { it.readBytes() }
+                    }
+                    break
+                } finally {
+                    conn.disconnect()
+                }
+            }
+            fetchedBytes ?: return@withContext null
+        }
+
+        if (rawBytes.isEmpty()) return@withContext null
+
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOpts)
+        var sampleSize = 1
+        val maxSide = maxOf(boundsOpts.outWidth, boundsOpts.outHeight)
+        if (maxSide > maxDimensionPx && maxDimensionPx > 0) {
+            while ((maxSide / sampleSize) > maxDimensionPx) {
+                sampleSize *= 2
+            }
+        }
+
+        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)?.asImageBitmap()
+    } catch (_: Throwable) {
+        null
     }
 }
 
