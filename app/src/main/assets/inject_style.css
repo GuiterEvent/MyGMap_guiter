@@ -84,15 +84,68 @@ body.mygmap-mobile-mode:not(.mygmap-drawer-open) #featurelist-pane:not([data-myg
     visibility: hidden !important;
 }
 
-/* 抽屜展開狀態：平滑滑入畫面左側 */
+/* 抽屜展開狀態：平滑滑入畫面左側，並解除上下滑動限制與補足底部留白 */
 body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"],
 body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane:not([data-mygmap-role="layer-panel"] *) {
     transform: translateX(0) !important;
     pointer-events: auto !important;
     visibility: visible !important;
+    touch-action: pan-y !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch !important;
+    overscroll-behavior: contain !important;
+    padding-bottom: 84px !important;
+    box-sizing: border-box !important;
 }
 
-/* 抽屜展開時的背景半透明遮罩 (點擊或左滑可關閉抽屜，並阻擋底層地圖誤觸) */
+/* Phase 14：強制覆寫 Google 桌面版拖曳排序留下的 touch-action: none，確保手指在圖層清單任意位置皆可上下滑動 */
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] *,
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane * {
+    touch-action: pan-y !important;
+}
+
+/* 解除圖層內部可滾動列表的過小固定高度與捲動限制 */
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] [id*="featurelist"],
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] [class*="scrollable"],
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] [class*="content"],
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane [id*="featurelist"],
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane [class*="scrollable"],
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane [class*="content"] {
+    overflow-y: auto !important;
+    max-height: none !important;
+    -webkit-overflow-scrolling: touch !important;
+}
+
+/* 圖層面板內部所有互動元素確保點擊可用 */
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] button,
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] [role="button"],
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] [role="checkbox"],
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] input,
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] a,
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel"] label,
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane button,
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane [role="button"],
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane [role="checkbox"],
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane input,
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane a,
+body.mygmap-mobile-mode.mygmap-drawer-open #featurelist-pane label {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+}
+
+/* Phase 14：私有外殼父層解鎖 (layer-panel-shell)
+ * 解除圖層面板向上不含地圖外層之父容器的 z-index、overflow 與 transform 鎖定，防止抽屜被父層裁切或鎖在低堆疊層級 */
+body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel-shell"] {
+    z-index: 9988 !important;
+    overflow: visible !important;
+    pointer-events: auto !important;
+    transform: none !important;
+}
+
+/* 抽屜展開時的背景半透明遮罩 (點擊或左滑可關閉抽屜，並阻擋底層地圖誤觸)
+ * Phase 14：物理位置調整為 right: 0 !important; width: auto !important;
+ * 預設 left: 340px !important 作退讓，並由 JS 依抽屜實際寬度動態指定 left，絕對不重疊左側圖層面板任何一像素！ */
 #mygmap-drawer-backdrop {
     display: none;
 }
@@ -101,10 +154,10 @@ body.mygmap-mobile-mode #mygmap-drawer-backdrop {
     display: block;
     position: fixed !important;
     top: 0 !important;
-    left: 0 !important;
+    left: 340px !important;
     right: 0 !important;
     bottom: 0 !important;
-    width: 100vw !important;
+    width: auto !important;
     height: 100vh !important;
     background: rgba(15, 23, 42, 0.45) !important;
     z-index: 9985 !important;
@@ -215,13 +268,38 @@ body.mygmap-mobile-mode .goog-toolbar-menu-button {
     border-radius: 6px !important;
 }
 
-/* 3.4 圖層面板內的按鈕與勾選框熱區放大 */
-body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] [role="button"],
-body.mygmap-mobile-mode #featurelist-pane [role="button"] {
-    min-height: 44px !important;
-    min-width: 44px !important;
-    padding: 6px 8px !important;
+/* 3.4 圖層面板內的核取方塊、操作按鈕與三點選單熱區優化（避免暴力硬撐整列造成跑版） */
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] [role="checkbox"],
+body.mygmap-mobile-mode #featurelist-pane [role="checkbox"] {
+    min-height: 36px !important;
+    min-width: 36px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
     box-sizing: border-box !important;
+}
+
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] button,
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] [role="button"]:not([class*="row"]):not([class*="item"]):not([class*="entry"]),
+body.mygmap-mobile-mode #featurelist-pane button,
+body.mygmap-mobile-mode #featurelist-pane [role="button"]:not([class*="row"]):not([class*="item"]):not([class*="entry"]) {
+    min-height: 36px !important;
+    min-width: 36px !important;
+    padding: 4px 8px !important;
+    box-sizing: border-box !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
+}
+
+/* 對新增圖層、匯入、樣式操作等重點按鈕適度放寬 */
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] [id*="add-layer"],
+body.mygmap-mobile-mode [data-mygmap-role="layer-panel"] [id*="import"],
+body.mygmap-mobile-mode #featurelist-pane [id*="add-layer"],
+body.mygmap-mobile-mode #featurelist-pane [id*="import"] {
+    min-height: 40px !important;
+    padding: 6px 12px !important;
 }
 
 /* 3.5 圖釘資訊氣泡窗 (InfoWindow) Phase 12 行動版美化、防裁字與觸控按鈕列優化 */
@@ -432,3 +510,38 @@ body.mygmap-inspect-mode * {
     background-color: rgba(239, 68, 68, 0.14) !important;
     transition: outline 0.15s ease, background-color 0.15s ease !important;
 }
+
+/* ----------------------------------------------------------------------------
+ * 5. Phase 14：提昇 Google Closure 彈出選單、調色盤、樣式選擇器與對話框層級
+ *    統一提升至 z-index: 10050 !important，確保高於抽屜 (9990) 與遮罩 (9985)，
+ *    解決「新增圖層」、「個別樣式」、「調色盤」、「三點選單」開在抽屜背後問題
+ * ---------------------------------------------------------------------------- */
+body.mygmap-mobile-mode .goog-menu,
+body.mygmap-mobile-mode .goog-menu-vertical,
+body.mygmap-mobile-mode .goog-popup,
+body.mygmap-mobile-mode .goog-popupcolorpicker,
+body.mygmap-mobile-mode [role="menu"],
+body.mygmap-mobile-mode [role="listbox"],
+body.mygmap-mobile-mode [role="dialog"],
+body.mygmap-mobile-mode .modal-dialog,
+body.mygmap-mobile-mode [class*="colorpicker"],
+body.mygmap-mobile-mode [class*="palette"] {
+    z-index: 10050 !important;
+    pointer-events: auto !important;
+}
+
+body.mygmap-mobile-mode .modal-dialog-bg {
+    z-index: 10040 !important;
+    pointer-events: auto !important;
+}
+
+body.mygmap-mobile-mode .goog-menu,
+body.mygmap-mobile-mode [role="menu"],
+body.mygmap-mobile-mode [role="dialog"],
+body.mygmap-mobile-mode .modal-dialog {
+    max-width: calc(100vw - 24px) !important;
+    max-height: 80vh !important;
+    overflow-y: auto !important;
+    box-sizing: border-box !important;
+}
+

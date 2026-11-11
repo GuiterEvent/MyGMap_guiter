@@ -188,6 +188,18 @@ MyGMap_guiter/
     2. **擷取並優先使用氣泡窗官方「在 Google 地圖檢視」(`placeUrl`) 與路線連結 (`directionsUrl`) (`inject_script.js`、`MyMapJsBridge.kt`、`MapExportAndIntentHelper.kt`、`MyMapScreen.kt`)**：
        - Google 我的地圖氣泡窗底部顯示的純文字經緯度常經過五位小數四捨五入或對應自訂標記草點，而網頁內的藍色 **`在「Google 地圖」檢視`** 連結 (`a[href]` 含 `/maps/place/`、`cid=`、`ftid=`、`!3d!4d`) 才直接綁定了 Google 地圖真實地點實體（這就是為何純網頁版點擊會準確落在左側真實地標 `Bogen Hostel as`）。
        - **對策**：在 `extractSelectedPinUiState()` 與 `extractNavigationContext()` 擷取 `placeUrl` 與 `directionsUrl` 並新增至 `SelectedPinInfo` 與 `MapNavigationContext`；在 `SelectedPinBottomCard` 點擊「🗺️ 在 Maps 開啟 (`PLACE_PIN`)」時若存在 `placeUrl` 直接以 `com.google.android.apps.maps` 開啟該官方連結（1:1 同純網頁版體驗），點擊「🧭 導航 (`NAVIGATION`)」時優先採用 `directionsUrl`、`placeUrl` 內的 `!3d!4d` 或公式地標實體（含高精度 `%.7f` 不再被五位數截斷），徹底消除偏移。
+- [x] **Phase 14：徹底修復圖層管理抽屜 (`#featurelist-pane`) 完全無法點擊、不能上下捲動、無法新增圖層與改樣式問題**
+  - **問題根因與修復重點**：
+    1. **CSS 堆疊上下文 (Stacking Context) 導致 `#mygmap-drawer-backdrop` 蓋在整個圖層面板上方 (`assets/inject_style.css` & `assets/inject_script.js`)**：
+       - `#mygmap-drawer-backdrop` 直接掛載在 `document.body` 下（`left: 0; width: 100vw; z-index: 9985; touch-action: none; pointer-events: auto`），而 `[data-mygmap-role="layer-panel"]`（`#featurelist-pane`）則嵌套在 Google 我的地圖帶有獨立 `z-index` 的外層容器中，導致抽屜就算設為 `z-index: 9990` 仍被鎖在較低層級、被半透明遮罩整片覆蓋吃掉所有觸控與上下滑動！
+       - **對策 1**：將 `#mygmap-drawer-backdrop` 嚴格限制在**抽屜右側露出的空隙區域**（於 `inject_script.js` 依抽屜實際寬度動態設定 `left`，右側設 `right: 0; width: auto;`），物理上**永遠不覆蓋左側抽屜任何一像素**。
+       - **對策 2**：展開抽屜時，為 `[data-mygmap-role="layer-panel"]` 向上至地圖外層前所有不含地圖畫布的私有外殼父容器（`!containsMapOrEditorRoot(el)`）標記 `data-mygmap-role="layer-panel-shell"`，解除限制性的 `overflow: hidden` / `transform` / 低 `z-index` 堆疊鎖定與 `pointer-events: none`。
+    2. **提昇 Google Closure 選單與樣式彈窗層級 (`assets/inject_style.css`)**：
+       - 圖層面板中「新增圖層」、「圖層樣式」、「三點選單 (⋮)」、「匯入 / 編輯」等操作會在 `document.body` 下建立 `.goog-menu`、`.goog-popup`、`.goog-popupcolorpicker`、`[role="menu"]`、`[role="listbox"]`、`[role="dialog"]`、`.modal-dialog`；必須統一賦予 `z-index: 10050 !important; pointer-events: auto !important;`（高於抽屜 `9990` 與遮罩 `9985`），確保選單與調色盤彈窗不會被壓在抽屜後方而按不到。
+    3. **解除內層容器 `touch-action: none` 與高度鎖死，恢復順暢上下滑動與核取方塊/按鈕點擊 (`assets/inject_style.css` & `assets/inject_script.js`)**：
+       - Google 我的地圖為了桌面拖曳排序會在 `#featurelist-pane` 內部設定 `touch-action: none`、固定像素高度與 `overflow: hidden`。在 `body.mygmap-mobile-mode.mygmap-drawer-open` 下強制 `[data-mygmap-role="layer-panel"]`、`#featurelist-pane` 及其子清單容器採用 `touch-action: pan-y !important;`、`overflow-y: auto !important;`、`overscroll-behavior: contain !important;`、`-webkit-overflow-scrolling: touch !important;` 與 `pointer-events: auto !important;`，加上 `padding-bottom: 84px !important;` 避免底部內容被右下方 FAB 遮擋。
+       - 同步修正對 `#featurelist-pane [role="button"]` 無差別硬套 `min-width: 44px; min-height: 44px` 可能擠壓緊湊核取方塊/折疊圖示的問題，確保圖層核取方塊 (`[role="checkbox"]`)、樣式圖示、新增圖層與選單都能輕鬆點擊操作。
+       - 確認展開抽屜後在點擊/操作 `.goog-menu` / `[role="dialog"]` / 圖層面板內部項目時，絕不會誤觸發收合抽屜或關閉圖釘邏輯。
 
 ---
 
@@ -590,6 +602,30 @@ MyGMap_guiter/
 - **驗證結果與注意事項**：
   - 已執行 `node --check app/src/main/assets/inject_script.js` 驗證 JS 語法正確（exit code 0）。
   - 已透過 node 測試腳本實測 `extractExactCoordsFromMapsUrl` 與 `findInfoWindowActionUrls` 邏輯無誤。
+  - 依指示**未執行 `build.bat` 或 `gradlew` 編譯指令**，由使用者自行手動編譯與實機驗證。
+
+### Phase 14 交接紀錄
+- **狀態**：已完成 (`[x]`)
+- **已建立/修改檔案**：
+  - `app/src/main/assets/inject_style.css`：
+    - 將 `#mygmap-drawer-backdrop` 物理位置與寬度改為 `right: 0 !important; width: auto !important;`（預設保留 `left: 340px !important` 退讓，並由 JS 依實際抽屜寬度動態設定 `left`），徹底杜絕遮罩覆蓋左側圖層面板任何 1 像素。
+    - 新增 `body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel-shell"]` 規則，設定 `z-index: 9988 !important; overflow: visible !important; pointer-events: auto !important; transform: none !important;`，解除 Google 地圖私有外層父容器對抽屜的低堆疊上下文與 overflow 裁切鎖定。
+    - 在 `body.mygmap-mobile-mode.mygmap-drawer-open` 下對 `[data-mygmap-role="layer-panel"]`、`#featurelist-pane` 及其子容器全面套用 `touch-action: pan-y !important;`、`overflow-y: auto !important;`、`overscroll-behavior: contain !important;`、`-webkit-overflow-scrolling: touch !important;` 與 `padding-bottom: 84px !important;`，解除桌面版拖曳排序鎖死上下捲動問題與避免底部被 GPS FAB 遮擋；為子清單容器解除過小高度鎖定，並為所有按鈕/checkbox 明確宣告 `pointer-events: auto !important; cursor: pointer !important;`。
+    - 修正原本無差別套用於所有 `[role="button"]` 的 `44px x 44px` 規則，改為針對 `[role="checkbox"]` 與操作按鈕提供 `36px x 36px` 舒適尺寸，避免圖層清單整列外框與開關核取方塊被撐壞跑版。
+    - 提昇 Google Closure 選單與樣式彈窗層級：將 `.goog-menu`、`.goog-menu-vertical`、`.goog-popup`、`.goog-popupcolorpicker`、`[role="menu"]`、`[role="listbox"]`、`[role="dialog"]`、`.modal-dialog`、`[class*="colorpicker"]`、`[class*="palette"]` 統一提升至 `z-index: 10050 !important; pointer-events: auto !important;`（高於抽屜 `9990` 與遮罩 `9985`），`.modal-dialog-bg` 設為 `z-index: 10040 !important`，並限制彈窗 `max-width: calc(100vw - 24px)` 與 `max-height: 80vh` 確保不出框。
+  - `app/src/main/assets/inject_script.js`：
+    - 新增 `syncDrawerBackdropBounds()`：當抽屜開啟時依實際圖層面板寬度動態計算並指定 `backdrop.style.setProperty('left', drawerWidthPx + 'px', 'important')`，收合時清理 left，物理上使遮罩僅覆蓋抽屜右側空白區域。
+    - 新增 `syncLayerPanelShells()`：從圖層面板向上遍歷至地圖根節點前，為所有非地圖共用外框的父容器（`!containsMapOrEditorRoot(el)`）標記 `data-mygmap-role="layer-panel-shell"`，抽屜收合或非手機模式時自動清理。
+    - 在 `applyBodyClasses()` 與 `scanAndTagDom()` 自動同步呼叫 `syncLayerPanelShells()` 與 `syncDrawerBackdropBounds()`。
+    - 在 `ensureDrawerBackdrop()` 的 click 與 touch 監聽加入對 `[role="menu"]`、`.goog-menu`、`[role="dialog"]` 及圖層面板內部的保護，確保點擊選單或調色盤時絕不誤關抽屜。
+    - 在 `setDrawerOpen(open)` 時，於 DOM 狀態更新後派發 `window.dispatchEvent(new Event('resize'))`，促使 Google 我的地圖清單重繪並計算正確可滾動高度；並監聽視窗 `resize` 動態更新 backdrop 邊界。
+    - 於 `window.MyGMapHelper` 公開 `syncDrawerBackdropBounds` 與 `syncLayerPanelShells`。
+  - `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`：
+    - 擴充斷言驗證 `inject_style.css` 包含 `touch-action: pan-y`、`.goog-menu` / `[role="menu"]` 高層級規則、`layer-panel-shell` 與 `#mygmap-drawer-backdrop` 右側對齊 (`right: 0 !important; width: auto !important;`) 規則。
+    - 擴充斷言驗證 `inject_script.js` 包含 `syncDrawerBackdropBounds`、`syncLayerPanelShells` 與動態設定 backdrop `left` 邏輯。
+- **驗證結果與注意事項**：
+  - 已執行 `node --check app/src/main/assets/inject_script.js` 檢查 JS 腳本語法完全正確（exit code 0）。
+  - 已透過 node 獨立驗證腳本測試所有 CSS 與 JS 斷言條件均為 true。
   - 依指示**未執行 `build.bat` 或 `gradlew` 編譯指令**，由使用者自行手動編譯與實機驗證。
 
 

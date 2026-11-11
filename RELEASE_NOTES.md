@@ -1,6 +1,23 @@
 # MyGMap Release Notes
 
-## v1.0.5 (Phase 13 — 修正 Maps 與導航落點微幅偏移、1:1 對齊官方地標實體)
+## v1.0.6 (Phase 14 — 徹底修復圖層管理抽屜無法點擊、上下滑動與彈出選單問題)
+
+### 🎯 核心修復與優化 (Fixes & Improvements)
+- **徹底解決半透明遮罩覆蓋圖層抽屜的問題（根治點擊與手勢失效）**
+  - **遮罩位置限制在抽屜右側**：修正原本 `#mygmap-drawer-backdrop` 鋪滿整個螢幕且因 CSS 堆疊上下文 (Stacking Context) 蓋在圖層面板正上方的致命問題；改為物理上 `right: 0 !important; width: auto !important;`，並由 JS 依抽屜實際寬度動態將 `backdrop.style.left` 設為抽屜右緣，確保遮罩物理上絕對不覆蓋左側圖層面板任何 1 像素！
+  - **解鎖私有外殼父容器 (`layer-panel-shell`)**：在展開抽屜時，自動為圖層面板向上不含地圖畫布的父容器標記 `layer-panel-shell`，解除外層 `overflow: hidden`、低堆疊 `z-index` 與 `transform` 鎖定，防止抽屜被父層邊界裁切或鎖在低層級。
+- **恢復順暢上下滑動與列表捲動**
+  - 強制覆寫 Google 桌面版拖曳排序留下的 `touch-action: none`，對抽屜本體及所有內部節點套用 `touch-action: pan-y !important;`、`overflow-y: auto !important;`、`overscroll-behavior: contain !important;` 與 `-webkit-overflow-scrolling: touch !important;`。
+  - 解除內部子清單容器過小的固定高度限制，並於抽屜底部保留 `84px` 安全留白，防止最底部的圖層項目被右下方 GPS 懸浮按鈕擋住。
+- **重構點擊熱區，徹底杜絕圖層清單整列撐壞破版**
+  - 修正過去無差別套用 `44px x 44px` 導致圖層清單項目變形、文字被截斷或開關核取方塊被遮蔽的問題。
+  - 調整為針對開關核取方塊 (`[role="checkbox"]`) 提供 `36px x 36px` 舒適觸控熱區，針對操作按鈕給予適度點擊尺寸，並對「新增圖層」與「匯入」按鈕保留 `40px` 醒目高度。
+- **提升 Google Closure 彈出選單、樣式對話框與調色盤層級**
+  - 解決「新增圖層」、「個別樣式」、「調色盤」或「三點選單 (⋮)」開啟在抽屜或遮罩背後無法點擊的問題。
+  - 將 `.goog-menu`、`[role="menu"]`、`[role="dialog"]`、調色盤及對話框統一提升至 `z-index: 10050 !important; pointer-events: auto !important;`（高於抽屜 `9990` 與遮罩 `9985`），並加入最大寬高限制防止彈窗超出手機螢幕。
+  - 於展開抽屜時自動派發 `resize` 事件促使清單滾動區重繪，並加入事件防護確保點擊選單內部或圖層項目時絕不誤關抽屜。
+
+---
 
 ### 🎯 核心修復與優化 (Fixes & Improvements)
 - **修正 Google Maps 網址座標解析優先序（真實地標圖釘優先）**

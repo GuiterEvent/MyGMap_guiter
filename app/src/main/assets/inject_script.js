@@ -599,6 +599,9 @@
         tagInfoWindowSubElements();
         tagFloatingHeaderChrome();
 
+        // 6. Phase 14：解鎖圖層面板向上私有外殼父層 (layer-panel-shell)
+        syncLayerPanelShells();
+
         return foundSummary;
     }
 
@@ -629,6 +632,7 @@
     /**
      * 4. 建立或取得抽屜展開時的背景遮罩 (#mygmap-drawer-backdrop)
      *    支援點擊或向左滑動關閉抽屜，並阻擋底層地圖觸控事件穿透。
+     *    Phase 14：保護 Google Closure 選單/調色盤/對話框與圖層內部點擊不誤關抽屜。
      */
     function ensureDrawerBackdrop() {
         if (!document.body) return null;
@@ -638,6 +642,11 @@
             backdrop.id = BACKDROP_ID;
             backdrop.setAttribute('aria-hidden', 'true');
             backdrop.addEventListener('click', function (e) {
+                if (e.target && e.target.closest && e.target.closest(
+                    '[role="menu"], .goog-menu, [role="dialog"], [data-mygmap-role="layer-panel"], [data-mygmap-role="layer-panel-shell"], #featurelist-pane'
+                )) {
+                    return;
+                }
                 e.preventDefault();
                 e.stopPropagation();
                 if (window.MyGMapHelper) {
@@ -647,6 +656,12 @@
 
             var touchStartX = null;
             backdrop.addEventListener('touchstart', function (e) {
+                if (e.target && e.target.closest && e.target.closest(
+                    '[role="menu"], .goog-menu, [role="dialog"], [data-mygmap-role="layer-panel"], [data-mygmap-role="layer-panel-shell"], #featurelist-pane'
+                )) {
+                    touchStartX = null;
+                    return;
+                }
                 if (e.touches && e.touches.length === 1) {
                     touchStartX = e.touches[0].clientX;
                 }
@@ -731,6 +746,78 @@
     }
 
     /**
+     * Phase 14：私有外殼父層解鎖標記 (layer-panel-shell)
+     * 從圖層面板 ([data-mygmap-role="layer-panel"] 或 #featurelist-pane) 往上遍歷父層，
+     * 僅限不包含地圖畫布或編輯器根節點的私有容器 (!containsMapOrEditorRoot(current))，
+     * 標記 data-mygmap-role="layer-panel-shell"，供 CSS 解除 overflow:hidden 與低堆疊鎖定。
+     */
+    function syncLayerPanelShells() {
+        try {
+            var existingShells = document.querySelectorAll('[data-mygmap-role="layer-panel-shell"]');
+            for (var i = 0; i < existingShells.length; i++) {
+                existingShells[i].removeAttribute('data-mygmap-role');
+            }
+
+            if (!helperState.mobileMode || !helperState.drawerOpen) {
+                return;
+            }
+
+            var panel = document.querySelector('[data-mygmap-role="layer-panel"]') ||
+                document.getElementById('featurelist-pane');
+            if (!panel) return;
+
+            var current = panel.parentElement;
+            var depth = 0;
+            while (current && current !== document.body && current !== document.documentElement && depth < 6) {
+                if (containsMapOrEditorRoot(current)) {
+                    break;
+                }
+                current.setAttribute('data-mygmap-role', 'layer-panel-shell');
+                current = current.parentElement;
+                depth++;
+            }
+        } catch (err) {
+            console.warn('[MyGMap] syncLayerPanelShells error:', err);
+        }
+    }
+
+    /**
+     * Phase 14：同步背景遮罩 (#mygmap-drawer-backdrop) 的水平位置與範圍
+     * 依實際圖層面板寬度動態將 backdrop.style.left 設為抽屜右側邊緣，
+     * 確保遮罩物理上只覆蓋右側留白區，絕對不覆蓋左側圖層面板任何一像素！
+     */
+    function syncDrawerBackdropBounds() {
+        try {
+            var backdrop = document.getElementById(BACKDROP_ID);
+            if (!backdrop) return;
+
+            if (!helperState.mobileMode || !helperState.drawerOpen) {
+                backdrop.style.removeProperty('left');
+                return;
+            }
+
+            var panel = document.querySelector('[data-mygmap-role="layer-panel"]') ||
+                document.getElementById('featurelist-pane');
+            var drawerWidthPx = 0;
+            if (panel && isElementUsable(panel)) {
+                var rect = panel.getBoundingClientRect();
+                if (rect.width > 0) {
+                    drawerWidthPx = Math.round(rect.width);
+                }
+            }
+
+            if (drawerWidthPx <= 0) {
+                var vw = window.innerWidth || (document.documentElement ? document.documentElement.clientWidth : 0) || 360;
+                drawerWidthPx = Math.min(Math.round(vw * 0.85), 340);
+            }
+
+            backdrop.style.setProperty('left', drawerWidthPx + 'px', 'important');
+        } catch (err) {
+            console.warn('[MyGMap] syncDrawerBackdropBounds error:', err);
+        }
+    }
+
+    /**
      * 套用 body class 狀態 (mygmap-mobile-mode, mygmap-drawer-open / mygmap-drawer-closed, mygmap-inspect-mode)
      */
     function applyBodyClasses() {
@@ -756,6 +843,10 @@
         } else {
             document.body.classList.remove('mygmap-inspect-mode');
         }
+
+        // Phase 14：同步私有父層容器標記與遮罩邊界
+        syncLayerPanelShells();
+        syncDrawerBackdropBounds();
     }
 
     /**
@@ -3100,8 +3191,15 @@
                 reportMobileModeState();
             }
             scanAndTagDom();
+            syncLayerPanelShells();
             applyBodyClasses();
+            syncDrawerBackdropBounds();
             reportDrawerState();
+            if (helperState.drawerOpen) {
+                try {
+                    window.dispatchEvent(new Event('resize'));
+                } catch (_e) {}
+            }
             return helperState.drawerOpen;
         },
 
@@ -3275,7 +3373,13 @@
                 activeTool: helperState.activeTool,
                 domSummary: domSummary
             };
-        }
+        },
+
+        /** Phase 14：同步背景遮罩位置 */
+        syncDrawerBackdropBounds: syncDrawerBackdropBounds,
+
+        /** Phase 14：同步私有圖層父層解鎖標記 */
+        syncLayerPanelShells: syncLayerPanelShells
     };
 
     /**
@@ -3362,6 +3466,13 @@
                 reportSelectedPinStateIfChanged(false);
             }, 150);
         });
+
+        // Phase 14：螢幕旋轉或視窗 resize 時，若抽屜開啟中自動同步背景遮罩位置
+        window.addEventListener('resize', function () {
+            if (helperState.drawerOpen) {
+                syncDrawerBackdropBounds();
+            }
+        }, { passive: true });
 
         // 透過節流 MutationObserver 動態追蹤 Google My Maps 異步渲染出的面板與工具列
         var scanTimer = null;

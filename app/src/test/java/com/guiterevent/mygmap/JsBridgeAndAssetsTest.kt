@@ -135,6 +135,19 @@ class JsBridgeAndAssetsTest {
         assertTrue("JS must define extractExactCoordsFromMapsUrl", jsText.contains("extractExactCoordsFromMapsUrl"))
         assertTrue("JS must define findInfoWindowActionUrls", jsText.contains("findInfoWindowActionUrls"))
         assertTrue("JS extractExactCoordsFromMapsUrl must prioritize !3d!4d pattern", jsText.contains("!3d") && jsText.contains("!4d"))
+
+        // Phase 14 required Layer Drawer Interactivity, Scrolling & Backdrop Boundary Rules
+        assertTrue("CSS must enforce touch-action: pan-y in drawer", cssText.contains("touch-action: pan-y !important;"))
+        assertTrue("CSS must elevate .goog-menu and [role=\"menu\"]", cssText.contains(".goog-menu") && cssText.contains("[role=\"menu\"]"))
+        assertTrue("CSS must elevate menu z-index to 10050", cssText.contains("z-index: 10050 !important;"))
+        assertTrue("CSS must unlock layer-panel-shell", cssText.contains("layer-panel-shell"))
+        assertTrue("CSS must enforce layer-panel-shell z-index and overflow", cssText.contains("z-index: 9988 !important;") && cssText.contains("overflow: visible !important;"))
+        assertTrue("CSS must align drawer backdrop to right edge", cssText.contains("right: 0 !important;") && cssText.contains("width: auto !important;"))
+
+        assertTrue("JS must define syncDrawerBackdropBounds", jsText.contains("syncDrawerBackdropBounds"))
+        assertTrue("JS must define syncLayerPanelShells", jsText.contains("syncLayerPanelShells"))
+        assertTrue("JS must tag layer-panel-shell", jsText.contains("layer-panel-shell"))
+        assertTrue("JS must dynamically set backdrop left offset", jsText.contains("backdrop.style.setProperty('left'"))
     }
 
     @Test

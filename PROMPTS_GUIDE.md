@@ -604,3 +604,58 @@
    - 完成後更新 `PROJECT_PLAN.md`：將 Phase 13 勾選為 `[x]` 並填寫「Phase 13 交接紀錄」。
 ```
 
+---
+
+## 【Phase 14 Prompt】徹底修復圖層管理抽屜無法點擊、不能上下滑動、無法新增圖層與更改樣式問題（不執行 build）
+
+```markdown
+請先完整閱讀專案根目錄下的 `PROJECT_PLAN.md`（包含 Phase 1 ~ Phase 13 的交接紀錄與最新的 Phase 14 規格），並檢視現有的 `app/src/main/assets/inject_style.css`、`app/src/main/assets/inject_script.js` 與 `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`。
+
+現在請直接修改專案中的檔案，執行 **Phase 14：徹底修復開啟「🗂️ 圖層」抽屜後，圖層管理頁面完全無法點擊、不能上下滑動、無法新增圖層、無法更改圖層樣式，也無法開啟/關閉圖層的問題**（注意：請務必直接寫入修改 `d:\CodeBase\GuiterEvent\MyGMap_guiter` 下的檔案；完成程式碼修改後**請勿執行 `build.bat` 或 `gradlew` 編譯**，我會自己執行）。
+
+### 🔍 圖層管理抽屜完全無法互動與捲動的三大根因：
+1. **CSS Stacking Context（堆疊上下文）陷阱導致 `#mygmap-drawer-backdrop` 蓋在整個圖層面板正上方！**
+   - `#mygmap-drawer-backdrop` 直接附加於 `document.body`，設定了 `position: fixed; left: 0; width: 100vw; height: 100vh; z-index: 9985 !important; pointer-events: auto !important; touch-action: none !important;`。
+   - 然而 `#featurelist-pane` (`[data-mygmap-role="layer-panel"]`) 位於 Google 我的地圖帶有獨立 `z-index`（如 `z-index: 1 ~ 10`）或 `transform` 的外層父容器中，導致抽屜就算設了 `z-index: 9990`，依然被父層鎖在較低堆疊層級！
+   - 結果 `document.body > #mygmap-drawer-backdrop` (`9985`) **整片壓在圖層面板上**，吃光了所有點擊與上下滑動手勢（同時把抽屜灰暗化）！
+2. **圖層內層的 `touch-action: none`、固定寫死高度與 `overflow: hidden` 鎖死了上下捲動**：
+   - Google 我的地圖為了桌面滑鼠拖曳排序圖層，會在 `#featurelist-pane` 內部節點設定 `touch-action: none`、`overflow: hidden` 或固定高度，導致手機觸控上下滑動完全沒反應。
+3. **Google Closure 選單、調色盤與樣式對話框 (`goog-menu` / `[role="menu"]` / `[role="dialog"]`) 的 `z-index` 低於抽屜 `9990`**：
+   - 當點擊「新增圖層」、「圖層樣式」、「個別樣式」或「三點選單 (⋮)」時，Google 會把選單／彈窗加在 `document.body` 下，但預設 `z-index` 小於 `9990`，導致選單開在抽屜或遮罩背後完全看不到也點不到！
+
+---
+
+### 🛠️ 本階段實作要求：
+
+1. **從物理位置徹底移除遮罩重疊，並解除私有外殼父層的堆疊/裁切鎖定 (`assets/inject_style.css` & `assets/inject_script.js`)**：
+   - **讓 `#mygmap-drawer-backdrop` 永遠只覆蓋抽屜右側的空隙區域**：
+     - 在 `inject_style.css` 將 `#mygmap-drawer-backdrop` 的右側與寬度調整為 `right: 0 !important; width: auto !important;`（左邊保留給抽屜，預設可設 `left: 340px` 作退讓），並在 `inject_script.js` 的 `applyBodyClasses()` / `syncDrawerBackdropBounds()` 中，依實際 `[data-mygmap-role="layer-panel"]` 寬度（或 `Math.min(Math.round(window.innerWidth * 0.85), 340)`）動態將 `backdrop.style.setProperty('left', drawerWidthPx + 'px', 'important')`！
+     - 這樣 `#mygmap-drawer-backdrop` **物理上絕對不會覆蓋左側圖層面板的任何 1 像素**，從根源杜絕遮罩吃掉觸控或滑動！
+   - **私有外殼父層解鎖 (`layer-panel-shell`)**：
+     - 在 `inject_script.js` 新增 helper（於 `scanAndTagDom()` / `setDrawerOpen()` 呼叫）：從 `[data-mygmap-role="layer-panel"]` 往上檢查父層（僅限 `el !== document.body && el !== document.documentElement && !containsMapOrEditorRoot(el)`，也就是不包住地圖畫布的圖層私有外框），為其標記 `data-mygmap-role="layer-panel-shell"`（抽屜關閉或非手機模式時清除）。
+     - 在 `inject_style.css` 的 `body.mygmap-mobile-mode.mygmap-drawer-open [data-mygmap-role="layer-panel-shell"]` 強制設定：`z-index: 9988 !important; overflow: visible !important; pointer-events: auto !important; transform: none !important;`（保證不會被外層 `overflow: hidden` 或低 `z-index` 鎖死或裁切！）。
+
+2. **強制解除 `#featurelist-pane` 與內部列表的滑動封鎖，並確保高層級操作與底部留白 (`assets/inject_style.css` & `assets/inject_script.js`)**：
+   - 在 `inject_style.css` 的 `body.mygmap-mobile-mode.mygmap-drawer-open` 下：
+     - 對 `[data-mygmap-role="layer-panel"]` 與 `#featurelist-pane`：強制 `pointer-events: auto !important;`、`touch-action: pan-y !important;`、`overflow-y: auto !important;`、`overflow-x: hidden !important;`、`-webkit-overflow-scrolling: touch !important;`、`overscroll-behavior: contain !important;`、`padding-bottom: 84px !important;`（避免最底部的圖層項目或按鈕被右下方 GPS 懸浮按鈕擋住）。
+     - 對 `[data-mygmap-role="layer-panel"] *` 與 `#featurelist-pane *`：強制 `touch-action: pan-y !important;`（徹底覆寫 Google 桌面版拖曳排序留下的 `touch-action: none`，確保手指在任何項目上都能流暢上下滑動！），並且為可捲動子容器（如 `[id*="featurelist"]`、`[class*="scrollable"]`）解除過小的高度鎖定與 `overflow-y: auto !important;`；對互動元素（`button, [role="button"], [role="checkbox"], input, a, label`）明確加上 `pointer-events: auto !important; cursor: pointer !important;`。
+   - **修正既有過度粗暴的按鈕尺寸規則**：
+     - 檢視 `inject_style.css` 原本的 `#featurelist-pane [role="button"] { min-height: 44px !important; min-width: 44px !important; }`，確認不會把原本緊湊的圖層整列外框或圖標撐壞或遮住旁邊的開關核取方塊 (`[role="checkbox"]`)，建議改為對 `[role="checkbox"]`、圖層三點選單、樣式按鈕與「新增圖層」按鈕給予合適而不破版的點擊區域（例如 `min-height: 36px; min-width: 36px;` 或只針對頂部操作列/按鈕放寬，避免內嵌整列 `[role="button"]` 被撐成異常寬度）。
+
+3. **提昇 Google Closure 彈出選單、圖層樣式選擇器與對話框層級 (`assets/inject_style.css`)**：
+   - 在 `body.mygmap-mobile-mode` 下，將下列彈出層統一提升至 `z-index: 10050 !important; pointer-events: auto !important;`（確保高於抽屜 `9990` 與遮罩 `9985`）：
+     - `.goog-menu`、`.goog-menu-vertical`、`.goog-popup`、`.goog-popupcolorpicker`
+     - `[role="menu"]`、`[role="listbox"]`、`[role="dialog"]`
+     - `.modal-dialog`、`.modal-dialog-bg`（`.modal-dialog-bg` 設為 `z-index: 10040 !important`）
+     - `[class*="colorpicker"]`、`[class*="palette"]`
+   - 並讓 `.goog-menu` / `[role="dialog"]` 寬度受限於 `max-width: calc(100vw - 24px) !important; box-sizing: border-box !important; overflow-y: auto !important; max-height: 80vh !important;`，防止新增圖層/更改樣式/重新命名彈窗超出手機螢幕。
+   - 在 `inject_script.js` 的 `setDrawerOpen(true)` 時，於 DOM 套用後觸發一次 `window.dispatchEvent(new Event('resize'))` 並確保 Google 列表重新計算滾動區；同時確認點擊 `[role="menu"]`、`.goog-menu`、`[role="dialog"]` 或 `[data-mygmap-role="layer-panel"]` 內部時不會誤關抽屜。
+
+4. **更新單元測試與交接紀錄（請勿執行 build）**：
+   - 在 `JsBridgeAndAssetsTest.kt` 擴充斷言驗證：
+     - `inject_style.css` 包含 `touch-action: pan-y`、`.goog-menu` / `[role="menu"]` 高層級規則、`layer-panel-shell` 與 `#mygmap-drawer-backdrop` 右側對齊 (`right: 0 !important`) 規則。
+     - `inject_script.js` 包含抽屜寬度同步遮罩位置邏輯與 `layer-panel-shell` 解鎖處理，並以 `node --check app/src/main/assets/inject_script.js` 檢查語法正確。
+   - **請勿執行 `build.bat` 或 `gradlew` 編譯指令**（使用者會自行手動編譯）。
+   - 完成後更新 `PROJECT_PLAN.md`：將 Phase 14 勾選為 `[x]` 並填寫「Phase 14 交接紀錄」。
+```
+
