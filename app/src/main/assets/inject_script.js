@@ -467,6 +467,74 @@
         return null;
     }
 
+    function isSafeOverlayChromeNode(el) {
+        if (!el || el === document.body || el === document.documentElement) return false;
+        if (el.nodeType !== 1) return false;
+        if (el.querySelector && el.querySelector(
+            '#map-canvas, #lyra-canvas, #map-container, .gm-style, canvas, ' +
+            '#featurelist-pane, #map-infowindow-container'
+        )) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 標記右上角 Google 帳號頭像、九宮格選單與網頁版頂部搜尋列外層容器，讓行動版 CSS 隱藏以釋放地圖空間
+     */
+    function tagFloatingHeaderChrome() {
+        var accountSelectors = [
+            '#gb',
+            'a[href*="accounts.google.com/SignOutOptions"]',
+            '[aria-label*="Google 帳戶"]',
+            '[aria-label*="Google Account"]',
+            '[aria-label*="Google 應用程式"]',
+            '[aria-label*="Google apps"]'
+        ];
+        for (var i = 0; i < accountSelectors.length; i++) {
+            try {
+                var matches = document.querySelectorAll(accountSelectors[i]);
+                for (var j = 0; j < matches.length; j++) {
+                    var target = matches[j];
+                    if (!isSafeOverlayChromeNode(target)) continue;
+                    var curr = target;
+                    var best = target;
+                    var depth = 0;
+                    while (curr && curr.parentElement && depth < 4) {
+                        var parent = curr.parentElement;
+                        if (!isSafeOverlayChromeNode(parent)) break;
+                        var pRect = parent.getBoundingClientRect ? parent.getBoundingClientRect() : null;
+                        if (!pRect || pRect.width > 360 || pRect.height > 180) break;
+                        best = parent;
+                        curr = parent;
+                        depth++;
+                    }
+                    best.setAttribute('data-mygmap-role', 'google-account-widget');
+                }
+            } catch (_e) {}
+        }
+
+        // 2. 標記桌面版頂部搜尋框與外層陰影卡片容器 (#mapsprosearch-field / #mapsprosearch-button)
+        var searchField = document.getElementById('mapsprosearch-field');
+        var searchBtn = document.getElementById('mapsprosearch-button');
+        var searchAnchor = searchField || searchBtn;
+        if (searchAnchor && isSafeOverlayChromeNode(searchAnchor)) {
+            var sCurr = searchAnchor;
+            var sBest = searchAnchor;
+            var sDepth = 0;
+            while (sCurr && sCurr.parentElement && sDepth < 5) {
+                var sParent = sCurr.parentElement;
+                if (!isSafeOverlayChromeNode(sParent)) break;
+                var sRect = sParent.getBoundingClientRect ? sParent.getBoundingClientRect() : null;
+                if (!sRect || sRect.height > 220) break;
+                sBest = sParent;
+                sCurr = sParent;
+                sDepth++;
+            }
+            sBest.setAttribute('data-mygmap-role', 'search-container');
+        }
+    }
+
     /**
      * 掃描全頁 DOM 並標記 data-mygmap-role，供 inject_style.css 套用行動版抽屜與觸控放大樣式
      * Phase 10 調整順序：
@@ -500,11 +568,19 @@
             var el = findElement(key);
             foundSummary[key] = Boolean(el);
 
-            // 若找到新增標記或選取工具，順便將其父層工具列標記為 editor-toolbar
-            if (el && (key === 'addMarkerTool' || key === 'selectTool' || key === 'drawLineTool')) {
-                var toolbar = el.closest('[role="toolbar"]') || el.parentElement;
-                if (toolbar && toolbar !== document.body) {
-                    toolbar.setAttribute('data-mygmap-role', 'editor-toolbar');
+            // 若找到新增標記、選取或復原/重做工具，順便將其所屬工具列及外層陰影框標記為 editor-toolbar
+            if (el && (key === 'addMarkerTool' || key === 'selectTool' || key === 'drawLineTool' || key === 'undoTool' || key === 'redoTool')) {
+                var toolbar = el.closest('[role="toolbar"], .goog-toolbar') || el.parentElement;
+                if (toolbar && isSafeOverlayChromeNode(toolbar)) {
+                    var tbBest = toolbar;
+                    var tbParent = toolbar.parentElement;
+                    if (tbParent && isSafeOverlayChromeNode(tbParent)) {
+                        var tbRect = tbParent.getBoundingClientRect ? tbParent.getBoundingClientRect() : null;
+                        if (tbRect && tbRect.height <= 220) {
+                            tbBest = tbParent;
+                        }
+                    }
+                    tbBest.setAttribute('data-mygmap-role', 'editor-toolbar');
                 }
             }
         }
@@ -519,8 +595,9 @@
             }
         }
 
-        // 5. Phase 12：標記展開中的氣泡窗按鈕列與詳細資料區塊
+        // 5. Phase 12：標記展開中的氣泡窗按鈕列與詳細資料區塊，並標記右上角多餘帳號/工具列
         tagInfoWindowSubElements();
+        tagFloatingHeaderChrome();
 
         return foundSummary;
     }

@@ -13,6 +13,7 @@ if "%PROJECT_ROOT:~-1%"=="\" set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
 
 set "NO_EXPLORER=0"
 set "BOOTSTRAP_JDK=0"
+set "NO_BUMP=0"
 set "BUILD_MODE=debug"
 set "GRADLE_TASKS="
 
@@ -25,6 +26,11 @@ if /i "%~1"=="--no-explorer" (
 )
 if /i "%~1"=="--bootstrap-jdk" (
     set "BOOTSTRAP_JDK=1"
+    shift
+    goto :ParseArgs
+)
+if /i "%~1"=="--no-bump" (
+    set "NO_BUMP=1"
     shift
     goto :ParseArgs
 )
@@ -258,14 +264,50 @@ echo   -------------------------------------------------------------------------
 exit /b 1
 
 REM ============================================================================
-REM Step C - Execute Gradle Wrapper (Apache 2.0) Build
+REM Step C - Resolve App Version & Execute Gradle Wrapper (Apache 2.0) Build
 REM ============================================================================
 :StepCBuild
-echo [Step C] 正在透過 Gradle Wrapper (Apache 2.0) 執行建置任務: %GRADLE_TASKS% ...
+set "VERSION_PROPS=%PROJECT_ROOT%\version.properties"
+set "CUR_MAJOR=1"
+set "CUR_MINOR=0"
+set "CUR_PATCH=0"
+set "CUR_CODE=1"
+
+if exist "%VERSION_PROPS%" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%VERSION_PROPS%") do (
+        if "%%A"=="VERSION_MAJOR" set "CUR_MAJOR=%%B"
+        if "%%A"=="VERSION_MINOR" set "CUR_MINOR=%%B"
+        if "%%A"=="VERSION_PATCH" set "CUR_PATCH=%%B"
+        if "%%A"=="VERSION_CODE" set "CUR_CODE=%%B"
+    )
+)
+
+set "APP_VERSION_PATCH=%CUR_PATCH%"
+set "APP_VERSION_CODE=%CUR_CODE%"
+set "APP_VERSION_NAME=%CUR_MAJOR%.%CUR_MINOR%.%CUR_PATCH%"
+set "VERSION_GRADLE_ARGS="
+set "WILL_BUMP_VERSION=0"
+
+if /i "%BUILD_MODE%"=="debug" set "WILL_BUMP_VERSION=1"
+if /i "%BUILD_MODE%"=="release" set "WILL_BUMP_VERSION=1"
+if "%NO_BUMP%"=="1" set "WILL_BUMP_VERSION=0"
+
+if "%WILL_BUMP_VERSION%"=="1" (
+    set /a APP_VERSION_PATCH=CUR_PATCH + 1
+    set /a APP_VERSION_CODE=CUR_CODE + 1
+    set "APP_VERSION_NAME=%CUR_MAJOR%.%CUR_MINOR%.!APP_VERSION_PATCH!"
+    set "VERSION_GRADLE_ARGS=-PnextVersionCode=!APP_VERSION_CODE! -PnextVersionName=!APP_VERSION_NAME!"
+    echo [Step C] 正在透過 Gradle Wrapper ^(Apache 2.0^) 執行建置任務: %GRADLE_TASKS% ...
+    echo   🏷️  目前版本 : v%CUR_MAJOR%.%CUR_MINOR%.%CUR_PATCH% ^(versionCode=%CUR_CODE%^)
+    echo   🚀 目標版本 : v!APP_VERSION_NAME! ^(versionCode=!APP_VERSION_CODE!^) [編譯成功後自動寫回 version.properties]
+) else (
+    echo [Step C] 正在透過 Gradle Wrapper ^(Apache 2.0^) 執行建置任務: %GRADLE_TASKS% ...
+    echo   🏷️  目前版本 : v%APP_VERSION_NAME% ^(versionCode=%APP_VERSION_CODE%^)
+)
 echo --------------------------------------------------------------------------------
 
 pushd "%PROJECT_ROOT%"
-call "%PROJECT_ROOT%\gradlew.bat" %GRADLE_TASKS% -Dorg.gradle.java.home="%JAVA_HOME%" --console=plain
+call "%PROJECT_ROOT%\gradlew.bat" %GRADLE_TASKS% %VERSION_GRADLE_ARGS% -Dorg.gradle.java.home="%JAVA_HOME%" --console=plain
 set "GRADLE_EXIT_CODE=%ERRORLEVEL%"
 popd
 
@@ -300,12 +342,13 @@ echo ===========================================================================
 exit /b 0
 
 REM ============================================================================
-REM Step D - Verify APK Output, Copy to dist\, and Print Summary
+REM Step D - Verify APK Output, Persist Version Bump, Copy to dist\, and Print Summary
 REM ============================================================================
 :StepDPackageApk
 set "RAW_APK_PATH=%PROJECT_ROOT%\app\build\outputs\apk\debug\app-debug.apk"
 set "DIST_DIR=%PROJECT_ROOT%\dist"
 set "DIST_APK_PATH=%DIST_DIR%\MyGMap-debug.apk"
+set "DIST_VERSIONED_APK_PATH=%DIST_DIR%\MyGMap-debug-v%APP_VERSION_NAME%.apk"
 
 if /i "%BUILD_MODE%"=="release" (
     if exist "%PROJECT_ROOT%\app\build\outputs\apk\release\app-release.apk" (
@@ -314,16 +357,28 @@ if /i "%BUILD_MODE%"=="release" (
         set "RAW_APK_PATH=%PROJECT_ROOT%\app\build\outputs\apk\release\app-release-unsigned.apk"
     )
     set "DIST_APK_PATH=%DIST_DIR%\MyGMap-release.apk"
+    set "DIST_VERSIONED_APK_PATH=%DIST_DIR%\MyGMap-release-v%APP_VERSION_NAME%.apk"
 )
 
 if not exist "%RAW_APK_PATH%" goto :MissingApkError
 
+if "%WILL_BUMP_VERSION%"=="1" (
+    (
+        echo # MyGMap App Version Configuration ^(managed automatically by build.bat on successful APK builds^)
+        echo VERSION_MAJOR=%CUR_MAJOR%
+        echo VERSION_MINOR=%CUR_MINOR%
+        echo VERSION_PATCH=%APP_VERSION_PATCH%
+        echo VERSION_CODE=%APP_VERSION_CODE%
+    ) > "%VERSION_PROPS%"
+)
+
 if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 copy /y "%RAW_APK_PATH%" "%DIST_APK_PATH%" >nul
+copy /y "%RAW_APK_PATH%" "%DIST_VERSIONED_APK_PATH%" >nul
 
 set "APK_INFO_STR="
 set "APK_INFO_TMP=%TEMP%\mygmap_apk_info.txt"
-powershell -NoProfile -Command "$f = Get-Item -LiteralPath '%DIST_APK_PATH%'; $mb = [math]::Round($f.Length / 1MB, 2); $kb = [math]::Round($f.Length / 1KB, 1); $ts = $f.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'); Set-Content -LiteralPath '%APK_INFO_TMP%' -Value \"$mb MB ($kb KB / $($f.Length) bytes) -- Last Modified: $ts\" -Encoding Ascii"
+powershell -NoProfile -Command "$f = Get-Item -LiteralPath '%DIST_VERSIONED_APK_PATH%'; $mb = [math]::Round($f.Length / 1MB, 2); $kb = [math]::Round($f.Length / 1KB, 1); $ts = $f.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'); Set-Content -LiteralPath '%APK_INFO_TMP%' -Value \"$mb MB ($kb KB / $($f.Length) bytes) -- Last Modified: $ts\" -Encoding Ascii"
 if exist "%APK_INFO_TMP%" (
     set /p APK_INFO_STR=<"%APK_INFO_TMP%"
     del /q "%APK_INFO_TMP%" >nul 2>&1
@@ -332,6 +387,11 @@ if exist "%APK_INFO_TMP%" (
 echo.
 echo ================================================================================
 echo  ✅ 編譯結果：成功（100%% 純開源工具鏈建置）
+echo --------------------------------------------------------------------------------
+echo  🏷️  APK 版本號碼：v%APP_VERSION_NAME% ^(versionCode=%APP_VERSION_CODE%^)
+if "%WILL_BUMP_VERSION%"=="1" (
+    echo      （已自動遞增並寫回 version.properties）
+)
 echo --------------------------------------------------------------------------------
 echo  📜 工具鏈授權確認：
 echo     - OpenJDK 發行版 : %JDK_IMPLEMENTOR% (%JDK_IMPL_VERSION% / Java %JDK_JAVA_VERSION%)
@@ -342,8 +402,11 @@ echo ---------------------------------------------------------------------------
 echo  📂 Gradle 原始 APK 完整路徑：
 echo     %RAW_APK_PATH%
 echo.
-echo  📂 快捷提取 APK 完整路徑：
+echo  📂 快捷提取 APK（固定檔名）：
 echo     %DIST_APK_PATH%
+echo.
+echo  📂 版號歸檔 APK（含版本號）：
+echo     %DIST_VERSIONED_APK_PATH%
 echo.
 echo  📦 檔案大小 (MB/KB) 與最後修改時間：
 echo     %APK_INFO_STR%
@@ -357,7 +420,7 @@ goto :AfterAdbHint
 echo.
 echo  📱 [ADB 快捷安裝提示] 偵測到系統具備開源 Android Platform Tools (adb)：
 echo     可連接手機並執行以下指令一鍵安裝 APK：
-echo     adb install -r "%DIST_APK_PATH%"
+echo     adb install -r "%DIST_VERSIONED_APK_PATH%"
 
 :AfterAdbHint
 if "%NO_EXPLORER%"=="0" goto :OpenExplorerSelect
@@ -366,7 +429,7 @@ goto :BuildDone
 :OpenExplorerSelect
 echo.
 echo  🗂️  正在開啟 Windows 檔案總管並定位至 APK 檔案...
-explorer.exe /select,"%DIST_APK_PATH%"
+explorer.exe /select,"%DIST_VERSIONED_APK_PATH%"
 
 :BuildDone
 echo.
@@ -433,6 +496,7 @@ echo   clean            清理建置快取 (clean)
 echo.
 echo 選項:
 echo   --no-explorer    編譯完成後不自動彈出 Windows 檔案總管視窗
+echo   --no-bump        編譯 APK 時不自動遞增 version.properties 版本號
 echo   --bootstrap-jdk  強制從 Eclipse Adoptium 官方 API 自動下載免安裝 OpenJDK 17 至 .toolchain\jdk-17
 echo   --help, -h       顯示本說明訊息
 echo.

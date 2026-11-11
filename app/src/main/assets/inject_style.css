@@ -123,12 +123,15 @@ body.mygmap-mobile-mode.mygmap-drawer-open #mygmap-drawer-backdrop {
  * 3. 放大觸控熱區 (44px ~ 48px 行動裝置人體工學尺寸)
  * ---------------------------------------------------------------------------- */
 
-/* 3.1 頂部搜尋列與搜尋輸入框 */
+/* 3.1 頂部搜尋列與搜尋輸入框（已由原生底部「🔍 搜尋」整合，行動模式下隱藏不遮擋地圖，
+ *     刻意使用 opacity: 0 + pointer-events: none 而非 display:none，確保 JS searchPlace() 仍可運作） */
 body.mygmap-mobile-mode [data-mygmap-role="search-container"] {
     left: 8px !important;
     right: 8px !important;
     max-width: calc(100vw - 16px) !important;
     z-index: 9000 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
 }
 
 body.mygmap-mobile-mode #mapsprosearch-field,
@@ -140,6 +143,8 @@ body.mygmap-mobile-mode [data-mygmap-role="search-input"] {
     padding: 8px 12px !important;
     box-sizing: border-box !important;
     border-radius: 8px 0 0 8px !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
 }
 
 /* 搜尋按鈕 */
@@ -154,6 +159,8 @@ body.mygmap-mobile-mode [data-mygmap-role="search-button"] {
     justify-content: center !important;
     box-sizing: border-box !important;
     cursor: pointer !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
 }
 
 /* 3.2 「新增至地圖 (#addtomap-button)」按鈕放大與醒目化 */
@@ -175,13 +182,22 @@ body.mygmap-mobile-mode [data-mygmap-role="add-to-map-button"] {
     box-sizing: border-box !important;
 }
 
-/* 3.3 頂部編輯工具列按鈕 (選取項目、新增標記、繪製線條、路線、測量等) */
-body.mygmap-mobile-mode [data-mygmap-role="editor-toolbar"] {
-    left: 8px !important;
-    max-width: calc(100vw - 16px) !important;
-    overflow-x: auto !important;
-    white-space: nowrap !important;
-    z-index: 8990 !important;
+/* 3.3 隱藏網頁頂部/右上角桌面工具列 (復原/重做白條) 與 Google 帳號頭像九宮格
+ *     （功能已整合至原生底部工具列「📌 插針 / ⚙️ 模式 -> 復原/重做」；
+ *     刻意使用 opacity: 0 + pointer-events: none 而非 display:none，確保 JS 仍可觸發按鈕） */
+body.mygmap-mobile-mode [data-mygmap-role="editor-toolbar"],
+body.mygmap-mobile-mode [data-mygmap-role="google-account-widget"],
+body.mygmap-mobile-mode [data-mygmap-role="search-container"],
+body.mygmap-mobile-mode a[href*="accounts.google.com/SignOutOptions"],
+body.mygmap-mobile-mode [aria-label*="Google 帳戶"],
+body.mygmap-mobile-mode [aria-label*="Google Account"],
+body.mygmap-mobile-mode [aria-label*="Google 應用程式"],
+body.mygmap-mobile-mode [aria-label*="Google apps"] {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: transparent !important;
 }
 
 body.mygmap-mobile-mode [data-mygmap-role^="tool-"],

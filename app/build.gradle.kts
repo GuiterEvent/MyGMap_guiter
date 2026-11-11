@@ -1,7 +1,25 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val versionPropsFile = rootProject.file("version.properties")
+val versionProps = Properties().apply {
+    if (versionPropsFile.exists()) {
+        versionPropsFile.inputStream().use { load(it) }
+    }
+}
+val baseVersionMajor = versionProps.getProperty("VERSION_MAJOR", "1").trim().toIntOrNull() ?: 1
+val baseVersionMinor = versionProps.getProperty("VERSION_MINOR", "0").trim().toIntOrNull() ?: 0
+val baseVersionPatch = versionProps.getProperty("VERSION_PATCH", "0").trim().toIntOrNull() ?: 0
+val baseVersionCode = versionProps.getProperty("VERSION_CODE", "1").trim().toIntOrNull() ?: 1
+
+val resolvedVersionCode = (project.findProperty("nextVersionCode") as? String)?.trim()?.toIntOrNull()
+    ?: baseVersionCode
+val resolvedVersionName = (project.findProperty("nextVersionName") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+    ?: "$baseVersionMajor.$baseVersionMinor.$baseVersionPatch"
 
 android {
     namespace = "com.guiterevent.mygmap"
@@ -11,8 +29,8 @@ android {
         applicationId = "com.guiterevent.mygmap"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = resolvedVersionCode
+        versionName = resolvedVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

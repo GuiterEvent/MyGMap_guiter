@@ -535,6 +535,14 @@ MyGMap_guiter/
   - 已執行 `node --check app/src/main/assets/inject_script.js` 驗證 JS 語法通過（exit code 0）。
   - 依規範未執行 `build.bat` 或 `gradlew` 編譯與 Gradle 單元測試，請使用者自行手動執行編譯與實機測試。
 
+### 補充更新：編譯成功自動遞增版本號與 APK 歸檔
+- **已建立/修改檔案**：
+  - `version.properties`：於專案根目錄集中管理 `VERSION_MAJOR=1`、`VERSION_MINOR=0`、`VERSION_PATCH=0`、`VERSION_CODE=1`。
+  - `app/build.gradle.kts`：改為從 `version.properties` 讀取預設版號，並支援接收 `-PnextVersionCode` / `-PnextVersionName` 參數。
+  - `build.bat`：執行 `debug` / `release` / `check` 編譯 APK 前自動計算下一版號 (`PATCH + 1`、`VERSION_CODE + 1`) 並傳入 Gradle 寫入 APK；**僅於 `gradlew.bat` 回傳成功 (`exit code == 0`) 且確認 APK 產出後**才寫回 `version.properties`（失敗或僅執行 `test` / `clean` 時不跳號；亦支援 `--no-bump` 選項），並同步產出 `dist\MyGMap-debug.apk` 與 `dist\MyGMap-debug-v<版本>.apk`。
+  - `app/src/main/java/com/guiterevent/mygmap/ui/BottomActionBar.kt`：於底部「⚙️ 模式」選單最下方顯示目前 App 版本 `版本：v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})`。
+  - `app/src/main/assets/inject_style.css` & `app/src/main/assets/inject_script.js`：於 `body.mygmap-mobile-mode` 下以 `opacity: 0; pointer-events: none;` 隱藏右上角多餘之 Google 帳號頭像/九宮格 (`google-account-widget`) 與桌面版復原/重做浮動白條 (`editor-toolbar`)，釋放完整地圖畫布同時保留底部原生工具列對插針/復原/重做的正常觸發。
+
 
 
 

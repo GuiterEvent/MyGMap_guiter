@@ -72,6 +72,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.guiterevent.mygmap.BuildConfig
 import com.guiterevent.mygmap.location.GpsCoordinates
 import com.guiterevent.mygmap.webview.GoogleMapsLaunchMode
 import com.guiterevent.mygmap.webview.MapNavigationContext
@@ -413,6 +414,15 @@ fun BottomActionBar(
                             showModeMenu = false
                             onResetGoogleLogin()
                         }
+                    )
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    Text(
+                        text = "版本：v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                 }
             }
