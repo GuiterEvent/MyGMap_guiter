@@ -148,6 +148,40 @@ class JsBridgeAndAssetsTest {
         assertTrue("JS must define syncLayerPanelShells", jsText.contains("syncLayerPanelShells"))
         assertTrue("JS must tag layer-panel-shell", jsText.contains("layer-panel-shell"))
         assertTrue("JS must dynamically set backdrop left offset", jsText.contains("backdrop.style.setProperty('left'"))
+
+        // Phase 15 required Native EditPinDialog CSS Lock & JS Background Edit/Save/Cancel/Delete APIs
+        assertTrue("CSS must define mygmap-native-pin-editing lock rule", cssText.contains("mygmap-native-pin-editing"))
+        assertTrue("JS must expose openNativePinEdit", jsText.contains("openNativePinEdit"))
+        assertTrue("JS must expose saveNativePinEdit", jsText.contains("saveNativePinEdit"))
+        assertTrue("JS must expose cancelNativePinEdit", jsText.contains("cancelNativePinEdit"))
+        assertTrue("JS must expose deleteSelectedPin", jsText.contains("deleteSelectedPin"))
+        assertTrue("JS must expose fallbackToWebPinEdit", jsText.contains("fallbackToWebPinEdit"))
+        assertTrue("JS must call onPinEditFormReady", jsText.contains("onPinEditFormReady"))
+        assertTrue("JS must call onPinEditResult", jsText.contains("onPinEditResult"))
+
+        // Phase 16 required Anti-Flicker Default Hide, Untagged Input Selector, PreventScroll & Viewport Scroll Lock
+        assertTrue(
+            "CSS must hide InfoWindow by default unless editing or addtomap visible",
+            cssText.contains("mygmap-addtomap-visible") &&
+                cssText.contains("body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible)")
+        )
+        assertTrue("CSS must lock overflow hidden on mobile root", cssText.contains("overflow: hidden !important;"))
+        assertTrue("JS must use focus({ preventScroll: true })", jsText.contains("preventScroll: true"))
+        assertTrue("JS must define resetMapViewportScrollLock", jsText.contains("resetMapViewportScrollLock"))
+        assertTrue(
+            "JS must support <input> without explicit type=\"text\" in InfoWindow edit selector",
+            jsText.contains("input:not([type=\"hidden\"]):not([type=\"checkbox\"]):not([type=\"radio\"]):not([type=\"button\"]):not([type=\"submit\"]):not([type=\"file\"])")
+        )
+        assertTrue("JS must toggle mygmap-addtomap-visible for search green pins", jsText.contains("mygmap-addtomap-visible"))
+        assertTrue("JS must install InfoWindow focus/scrollIntoView guard", jsText.contains("installInfoWindowFocusScrollGuard"))
+        assertTrue("JS must dispatch focus/focusin and clear label-input-label for Closure LabelInput", jsText.contains("dispatchEditableFocusEvents") && jsText.contains("label-input-label"))
+        assertTrue("JS must match any contenteditable including plaintext-only and empty attr", jsText.contains("[contenteditable]:not([contenteditable=\"false\"])") && jsText.contains("isContentEditableNode"))
+        assertTrue("JS must wait for editable fields on lazy save", jsText.contains("hasReadyEditableFields") && jsText.contains("findEditableByAttrIds"))
+        assertTrue("CSS must collapse hidden InfoWindow card to 8px to stop Google Maps autoPan", cssText.contains("width: 8px !important;") && cssText.contains("height: 8px !important;"))
+
+        // Phase 17 required Inner Closure Button Resolution & Strict Save Exit Verification
+        assertTrue("JS must define resolveClickableButton", jsText.contains("resolveClickableButton"))
+        assertTrue("JS must define clickInfoWindowControl", jsText.contains("clickInfoWindowControl"))
     }
 
     @Test
@@ -184,6 +218,7 @@ class JsBridgeAndAssetsTest {
             {
               "visible": true,
               "title": "大安森林公園音樂露台",
+              "description": "週末下午常有街頭藝人與吉他表演",
               "details": "台北市大安區新生南路二段1號",
               "rating": "4.7",
               "coordinates": "25.029654, 121.536210",
@@ -199,6 +234,7 @@ class JsBridgeAndAssetsTest {
         val visiblePin = MyMapJsBridge.parseSelectedPinInfo(visibleJson)
         assertTrue(visiblePin.visible)
         assertEquals("大安森林公園音樂露台", visiblePin.title)
+        assertEquals("週末下午常有街頭藝人與吉他表演", visiblePin.description)
         assertEquals("台北市大安區新生南路二段1號", visiblePin.details)
         assertEquals("4.7", visiblePin.rating)
         assertEquals("25.029654, 121.536210", visiblePin.coordinates)
@@ -240,5 +276,74 @@ class JsBridgeAndAssetsTest {
 
         val blankPin = MyMapJsBridge.parseSelectedPinInfo("")
         assertFalse(blankPin.visible)
+    }
+
+    @Test
+    fun `parsePinEditFormState parses title, description, extraFields, canDelete and failure state`() {
+        val successJson = """
+            {
+              "ok": true,
+              "title": "象山親山步道觀景台",
+              "description": "傍晚看台北 101 夕陽與夜景最佳位置",
+              "extraFields": [
+                {
+                  "id": "map-infowindow-attr-分類-value",
+                  "label": "分類",
+                  "value": "攝影秘境",
+                  "multiline": false
+                },
+                {
+                  "id": "map-infowindow-attr-交通方式-value",
+                  "label": "交通方式",
+                  "value": "捷運象山站步行 15 分鐘",
+                  "multiline": true
+                }
+              ],
+              "canDelete": true,
+              "canEditPhoto": true,
+              "canEditStyle": true,
+              "errorMessage": ""
+            }
+        """.trimIndent()
+
+        val form = MyMapJsBridge.parsePinEditFormState(successJson)
+        assertTrue(form.ok)
+        assertEquals("象山親山步道觀景台", form.title)
+        assertEquals("傍晚看台北 101 夕陽與夜景最佳位置", form.description)
+        assertTrue(form.canDelete)
+        assertTrue(form.canEditPhoto)
+        assertTrue(form.canEditStyle)
+        assertEquals("", form.errorMessage)
+        assertEquals(2, form.extraFields.size)
+        assertEquals("map-infowindow-attr-分類-value", form.extraFields[0].id)
+        assertEquals("分類", form.extraFields[0].label)
+        assertEquals("攝影秘境", form.extraFields[0].value)
+        assertFalse(form.extraFields[0].multiline)
+        assertEquals("map-infowindow-attr-交通方式-value", form.extraFields[1].id)
+        assertEquals("交通方式", form.extraFields[1].label)
+        assertEquals("捷運象山站步行 15 分鐘", form.extraFields[1].value)
+        assertTrue(form.extraFields[1].multiline)
+
+        val failureJson = """
+            {
+              "ok": false,
+              "title": "",
+              "description": "",
+              "extraFields": [],
+              "canDelete": false,
+              "errorMessage": "此地圖目前為唯讀檢視模式"
+            }
+        """.trimIndent()
+
+        val failedForm = MyMapJsBridge.parsePinEditFormState(failureJson)
+        assertFalse(failedForm.ok)
+        assertFalse(failedForm.canDelete)
+        assertTrue(failedForm.extraFields.isEmpty())
+        assertEquals("此地圖目前為唯讀檢視模式", failedForm.errorMessage)
+
+        val saveResult = MyMapJsBridge.parsePinEditResult("""{"ok": true, "action": "save", "message": "✅ 已儲存地點變更"}""")
+        assertTrue(saveResult.ok)
+        assertEquals("save", saveResult.action)
+        assertEquals("✅ 已儲存地點變更", saveResult.message)
     }
 }

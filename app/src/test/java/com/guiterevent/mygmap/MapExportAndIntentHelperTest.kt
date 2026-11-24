@@ -3,6 +3,7 @@ package com.guiterevent.mygmap
 import com.guiterevent.mygmap.location.GpsCoordinates
 import com.guiterevent.mygmap.webview.GoogleMapsLaunchMode
 import com.guiterevent.mygmap.webview.MapExportAndIntentHelper
+import com.guiterevent.mygmap.webview.MapNavigationContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull

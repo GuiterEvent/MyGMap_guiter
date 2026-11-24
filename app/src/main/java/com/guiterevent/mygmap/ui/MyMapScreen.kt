@@ -135,6 +135,7 @@ import com.guiterevent.mygmap.webview.MapExportAndIntentHelper
 import com.guiterevent.mygmap.webview.MapNavigationContext
 import com.guiterevent.mygmap.webview.MyMapJsBridge
 import com.guiterevent.mygmap.webview.MyMapWebViewClient
+import com.guiterevent.mygmap.webview.PinEditFormState
 import com.guiterevent.mygmap.webview.SelectedPinInfo
 import com.guiterevent.mygmap.webview.WebViewInjector
 import kotlinx.coroutines.Dispatchers
@@ -212,8 +213,14 @@ fun MyMapScreen(
 
     // Phase 12：目前點選圖釘氣泡窗即時偵測狀態（控制原生 Material 3 底部 POI 資訊快捷卡）
     var selectedPinInfo by remember { mutableStateOf<SelectedPinInfo?>(null) }
+
+    // Phase 15：原生 Material 3「✏️ 編輯地點」對話框狀態（背景寫回並自動儲存）
+    var activeEditPinForm by remember { mutableStateOf<PinEditFormState?>(null) }
+    var isSavingPinEdit by remember { mutableStateOf(false) }
+    var isOpeningNativePinEdit by remember { mutableStateOf(false) }
+
     val activePinForCard = selectedPinInfo?.takeIf {
-        it.visible && !it.isEditMode && webError == null && !isOffline
+        it.visible && !it.isEditMode && activeEditPinForm == null && webError == null && !isOffline
     }
     val showSelectedPinCard = activePinForCard != null
 
@@ -971,6 +978,9 @@ fun MyMapScreen(
                                     isAddMarkerMode = false
                                     activeSearchQuery = null
                                     selectedPinInfo = null
+                                    activeEditPinForm = null
+                                    isSavingPinEdit = false
+                                    isOpeningNativePinEdit = false
                                 }
                             },
                             onDomInspectedCallback = { domInfo ->
@@ -1042,6 +1052,39 @@ fun MyMapScreen(
                             },
                             onSelectedPinStateChangedCallback = { pinInfo ->
                                 selectedPinInfo = if (pinInfo.visible) pinInfo else null
+                            },
+                            onPinEditFormReadyCallback = { formState ->
+                                isOpeningNativePinEdit = false
+                                isSavingPinEdit = false
+                                if (formState.ok) {
+                                    activeEditPinForm = formState
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        formState.errorMessage.ifBlank { "⚠️ 無法開啟原生編輯表單，請確認此地圖可編輯" },
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            },
+                            onPinEditResultCallback = { result ->
+                                isSavingPinEdit = false
+                                if (result.ok) {
+                                    activeEditPinForm = null
+                                    if (result.action == "delete") {
+                                        selectedPinInfo = null
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        result.message.ifBlank { "✅ 已儲存地點變更" },
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        result.message.ifBlank { "⚠️ 操作未成功，請重試或改用原網頁編輯" },
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             }
                         )
                         addJavascriptInterface(jsBridge, MyMapJsBridge.BRIDGE_NAME)
@@ -1323,12 +1366,15 @@ fun MyMapScreen(
                             )
                         },
                         onEdit = {
-                            webViewRef?.let { wv ->
-                                WebViewInjector.triggerInfoWindowEdit(wv) { ok ->
-                                    if (!ok) {
+                            val wv = webViewRef
+                            if (wv != null && !isOpeningNativePinEdit) {
+                                isOpeningNativePinEdit = true
+                                WebViewInjector.openNativePinEdit(wv) { started ->
+                                    if (!started) {
+                                        isOpeningNativePinEdit = false
                                         Toast.makeText(
                                             context,
-                                            "⚠️ 無法自動切換至氣泡窗編輯模式，請直接點擊網頁上的鉛筆按鈕",
+                                            "⚠️ 無法開啟原生編輯對話框，請重新點選圖釘後再試",
                                             Toast.LENGTH_SHORT
                                         ).show()
                                     }
@@ -1703,6 +1749,74 @@ fun MyMapScreen(
             },
             onDismiss = {
                 showOpenInGoogleMapsDialog = false
+            }
+        )
+    }
+
+    // Phase 15：原生 Material 3「✏️ 編輯地點」對話框（取代飄移網頁氣泡窗編輯表單）
+    activeEditPinForm?.let { editForm ->
+        val pinCoordsDisplay = selectedPinInfo?.let { pin ->
+            pin.coordinates.trim().ifBlank {
+                if (pin.lat != null && pin.lng != null && LocationHelper.isValidLatLng(pin.lat, pin.lng)) {
+                    "${MapExportAndIntentHelper.formatHighPrecisionCoord(pin.lat)}, ${MapExportAndIntentHelper.formatHighPrecisionCoord(pin.lng)}"
+                } else {
+                    ""
+                }
+            }
+        }.orEmpty()
+
+        EditPinDialog(
+            formState = editForm,
+            coordinatesDisplay = pinCoordsDisplay,
+            isSaving = isSavingPinEdit,
+            onSave = { title, description, extraFields ->
+                val wv = webViewRef ?: return@EditPinDialog
+                isSavingPinEdit = true
+                WebViewInjector.saveNativePinEdit(
+                    webView = wv,
+                    title = title,
+                    description = description,
+                    extraFields = extraFields
+                ) { started ->
+                    if (!started) {
+                        isSavingPinEdit = false
+                        Toast.makeText(
+                            context,
+                            "⚠️ 無法送出儲存指令，請重試或改用原網頁編輯",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            },
+            onCancel = {
+                activeEditPinForm = null
+                isSavingPinEdit = false
+                isOpeningNativePinEdit = false
+                webViewRef?.let { wv ->
+                    WebViewInjector.cancelNativePinEdit(wv)
+                }
+            },
+            onDelete = {
+                val wv = webViewRef ?: return@EditPinDialog
+                isSavingPinEdit = true
+                WebViewInjector.deleteSelectedPin(wv) { started ->
+                    if (!started) {
+                        isSavingPinEdit = false
+                        Toast.makeText(
+                            context,
+                            "⚠️ 無法觸發刪除地點，請改用原網頁編輯刪除",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            },
+            onFallbackToWebEdit = {
+                activeEditPinForm = null
+                isSavingPinEdit = false
+                isOpeningNativePinEdit = false
+                webViewRef?.let { wv ->
+                    WebViewInjector.fallbackToWebPinEdit(wv)
+                }
             }
         )
     }
@@ -2157,6 +2271,39 @@ private fun SelectedPinBottomCard(
                             PinPhotoThumbnail(
                                 photoUrl = photoUrl,
                                 onClick = { previewPhotoIndex = idx }
+                            )
+                        }
+                    }
+                }
+
+                // 說明 / 備註區：若此 POI 含有使用者自訂說明文字，直接顯示於 POI 快捷卡上
+                val cleanDescription = pinInfo.description.trim()
+                if (cleanDescription.isNotEmpty()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFFF0F9FF),
+                        border = BorderStroke(1.dp, Color(0xFFBAE6FD))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "📝 說明",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF0369A1)
+                            )
+                            Text(
+                                text = cleanDescription,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                                color = Color(0xFF0F172A),
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }

@@ -47,32 +47,47 @@
 在專案根目錄下直接雙擊執行 `build.bat`，或在終端機 (CMD / PowerShell) 執行：
 
 ```bat
-:: 預設一鍵編譯 Debug APK，完成後自動複製至 dist\MyGMap-debug.apk 並開啟檔案總管定位
+:: 預設一鍵編譯 Debug APK，自動進版並複製至 dist\（同時產出最新覆蓋版與帶版號封存版）並開啟檔案總管定位
 build.bat
 
 :: 編譯 Debug APK 但不自動彈出檔案總管視窗（適合 CI / 自動化環境）
 build.bat --no-explorer
 
+:: 本次編譯不自動遞增版本號（沿用 version.properties 目前版號）
+build.bat --no-bump
+
 :: 同時執行單元測試與編譯 Debug APK
 build.bat check
 
-:: 僅執行單元測試 (testDebugUnitTest)
+:: 僅執行單元測試 (testDebugUnitTest，不進版)
 build.bat test
 
-:: 編譯 Release APK (複製至 dist\MyGMap-release.apk)
+:: 編譯 Release APK（複製至 dist\MyGMap-release.apk 與帶版號封存版）
 build.bat release
 
 :: 強制從 Eclipse Adoptium 官方開源 API 自動下載免安裝 OpenJDK 17 至 .toolchain\jdk-17
 build.bat --bootstrap-jdk
 ```
 
+#### 🔢 自動進版與版本號管理 (`version.properties`)
+- **集中管理版本號**：版本號集中管理於專案根目錄的 `version.properties`（包含 `VERSION_MAJOR`、`VERSION_MINOR`、`VERSION_PATCH`、`VERSION_CODE`），由 `app/build.gradle.kts` 讀取並寫入 APK 的 `versionName`、`versionCode` 與 `BuildConfig`。
+- **編譯成功才進版（不跳號）**：執行 `build.bat`（預設 `debug`、`release` 或 `check`）時，腳本會自動計算下一版號（`PATCH + 1`、`VERSION_CODE + 1`）寫入本次建置的 APK，且**只有在編譯成功並確認產出 APK 後**才會更新 `version.properties`（編譯失敗、僅執行 `build.bat test` / `clean` 或加上 `--no-bump` 時都不會跳號）。
+- **手動升主／次版號**：若需手動升主版號或次版號（如 `1.0.x` ➔ `1.1.0` 或 `2.0.0`），直接修改 `version.properties` 即可。
+- **App 內查看版本號**：可於 App 內點擊底部 **「⚙️ 模式」** 選單最下方查看目前安裝的 `版本：v<versionName> (<versionCode>)`。
+
 #### 📦 APK 產出路徑一覽
-編譯成功後，`build.bat` 會於終端機清楚印出工具鏈開源授權確認、檔案大小與以下兩個 APK 完整路徑：
-1. **快捷提取 APK 路徑（已自動歸檔命名）**：
+編譯成功後，`build.bat` 會於終端機清楚印出工具鏈開源授權確認、APK 版本號、檔案大小與以下產出路徑；其中 `dist\` 資料夾會同時產出**最新覆蓋版**與**帶版號封存版**：
+1. **快捷提取 APK 路徑（最新覆蓋版，固定檔名）**：
    ```text
    d:\CodeBase\GuiterEvent\MyGMap_guiter\dist\MyGMap-debug.apk
+   （Release 模式為 d:\CodeBase\GuiterEvent\MyGMap_guiter\dist\MyGMap-release.apk）
    ```
-2. **Gradle 原始產出 APK 路徑**：
+2. **版號歸檔 APK 路徑（帶版號封存版，保留歷史版本）**：
+   ```text
+   d:\CodeBase\GuiterEvent\MyGMap_guiter\dist\MyGMap-debug-v<版本>.apk
+   （Release 模式為 d:\CodeBase\GuiterEvent\MyGMap_guiter\dist\MyGMap-release-v<版本>.apk）
+   ```
+3. **Gradle 原始產出 APK 路徑**：
    ```text
    d:\CodeBase\GuiterEvent\MyGMap_guiter\app\build\outputs\apk\debug\app-debug.apk
    ```
@@ -117,9 +132,11 @@ build.bat --bootstrap-jdk
 
 ```text
 MyGMap_guiter/
-├── build.bat                        # Windows 100% 純開源工具鏈一鍵編譯與 APK 歸檔腳本
+├── build.bat                        # Windows 100% 純開源工具鏈一鍵編譯、自動進版與 APK 歸檔腳本
+├── version.properties               # App 版本號集中設定檔 (VERSION_MAJOR / MINOR / PATCH / CODE)
 ├── dist/
-│   └── MyGMap-debug.apk             # 一鍵編譯完成後自動歸檔提取之 APK 檔案
+│   ├── MyGMap-debug.apk             # 一鍵編譯完成後自動覆蓋更新之最新 APK 檔案
+│   └── MyGMap-debug-v<版本>.apk     # 依版本號封存歸檔之歷史 APK (Release 為 MyGMap-release-v<版本>.apk)
 ├── PROJECT_PLAN.md                  # 專案七階段開發藍圖與 AI 交接紀錄
 ├── README.md                        # 專案編譯與手機版操作說明文件
 └── app/src/main/

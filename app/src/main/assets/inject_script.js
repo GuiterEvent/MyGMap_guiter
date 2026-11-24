@@ -176,12 +176,15 @@
     };
 
     /**
-     * 判斷元素是否在畫面上可見（或僅因我們的抽屜收合 class 而位於畫面左側外）
+     * 判斷元素是否在畫面上可見（並排除位於 display:none 祖先容器內的隱藏檢視/編輯範本節點）
      */
     function isElementUsable(el) {
         if (!el || !el.ownerDocument) return false;
         var style = window.getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) {
+            return false;
+        }
         return true;
     }
 
@@ -696,8 +699,16 @@
         lastReportedPinStateJson: '',
         userDismissedPinJson: '',
         lastCloseActionAt: 0,
+        nativePinEditing: false,
+        webPinEditAllowed: false,
         initialized: false
     };
+    if (typeof helperState.nativePinEditing !== 'boolean') {
+        helperState.nativePinEditing = false;
+    }
+    if (typeof helperState.webPinEditAllowed !== 'boolean') {
+        helperState.webPinEditAllowed = false;
+    }
 
     var mapResizeDebounceTimer = null;
 
@@ -826,8 +837,14 @@
 
         if (helperState.mobileMode) {
             document.body.classList.add('mygmap-mobile-mode');
+            if (document.documentElement) {
+                document.documentElement.classList.add('mygmap-mobile-mode');
+            }
         } else {
             document.body.classList.remove('mygmap-mobile-mode');
+            if (document.documentElement) {
+                document.documentElement.classList.remove('mygmap-mobile-mode');
+            }
         }
 
         if (helperState.drawerOpen) {
@@ -842,6 +859,13 @@
             document.body.classList.add('mygmap-inspect-mode');
         } else {
             document.body.classList.remove('mygmap-inspect-mode');
+        }
+
+        // Phase 15：原生 EditPinDialog 編輯期間強制掛上 mygmap-native-pin-editing 隱藏網頁氣泡窗
+        if (helperState.mobileMode && helperState.nativePinEditing) {
+            document.body.classList.add('mygmap-native-pin-editing');
+        } else {
+            document.body.classList.remove('mygmap-native-pin-editing');
         }
 
         // Phase 14：同步私有父層容器標記與遮罩邊界
@@ -1054,6 +1078,71 @@
     }
 
     /**
+     * Phase 16：攔截 Google My Maps 自身在背景氣泡窗呼叫的 focus() 與 scrollIntoView()，
+     * 強制帶入 { preventScroll: true } 並阻擋 scrollIntoView，防止背景地圖在點擊編輯或關閉時自動亂移動！
+     */
+    function installInfoWindowFocusScrollGuard() {
+        if (window.__myGMapFocusScrollGuardInstalled) return;
+        window.__myGMapFocusScrollGuardInstalled = true;
+
+        function shouldGuardNode(node) {
+            if (!node || node.nodeType !== 1) return false;
+            if (!helperState.mobileMode || helperState.webPinEditAllowed) return false;
+            if (helperState.nativePinEditing) return true;
+            if (typeof node.closest === 'function') {
+                return Boolean(node.closest('#map-infowindow-container, .gm-style-iw, .gm-style-iw-c'));
+            }
+            return false;
+        }
+
+        try {
+            if (window.HTMLElement && window.HTMLElement.prototype && typeof window.HTMLElement.prototype.focus === 'function') {
+                var origFocus = window.HTMLElement.prototype.focus;
+                window.HTMLElement.prototype.focus = function (options) {
+                    if (shouldGuardNode(this)) {
+                        try {
+                            return origFocus.call(this, { preventScroll: true });
+                        } catch (_e) {
+                            return origFocus.call(this);
+                        }
+                    }
+                    return origFocus.apply(this, arguments);
+                };
+            }
+        } catch (err) {
+            console.warn('[MyGMap] focus guard install error:', err);
+        }
+
+        try {
+            if (window.Element && window.Element.prototype && typeof window.Element.prototype.scrollIntoView === 'function') {
+                var origScrollIntoView = window.Element.prototype.scrollIntoView;
+                window.Element.prototype.scrollIntoView = function () {
+                    if (shouldGuardNode(this)) {
+                        return;
+                    }
+                    return origScrollIntoView.apply(this, arguments);
+                };
+            }
+        } catch (err2) {
+            console.warn('[MyGMap] scrollIntoView guard install error:', err2);
+        }
+    }
+
+    /**
+     * Phase 16：安全聚焦元素並禁止瀏覽器捲動祖先容器（防止隱藏輸入框焦點將 overflow:hidden 地圖容器推偏）
+     */
+    function focusWithoutScroll(el) {
+        if (!el || typeof el.focus !== 'function') return;
+        try {
+            el.focus({ preventScroll: true });
+        } catch (_e) {
+            try {
+                el.focus();
+            } catch (_e2) {}
+        }
+    }
+
+    /**
      * 7. 強化版 Google Closure Library 模擬點擊序列 (simulateClick)
      * 依序派發完整的指標與滑鼠事件序列：
      * pointerdown -> mousedown -> pointerup -> mouseup -> click
@@ -1062,9 +1151,7 @@
     function simulateClick(el) {
         if (!el) return false;
         try {
-            if (typeof el.focus === 'function') {
-                el.focus();
-            }
+            focusWithoutScroll(el);
             var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
             var clientX = rect.left + (rect.width || 10) / 2;
             var clientY = rect.top + (rect.height || 10) / 2;
@@ -1110,12 +1197,108 @@
     var simulateClosureClick = simulateClick;
 
     /**
+     * Phase 17：解析真正綁定 Google Closure 點擊監聽器的內層按鈕節點
+     * Google 我的地圖的 #map-infowindow-done-editing-button / #map-infowindow-cancel-editing-button 等
+     * 常為外層 Wrapper <div>，真正綁定點擊事件的 <div role="button"> / <button> / .jfk-button 位於子節點。
+     * 因 DOM 事件只會向上冒泡 (child -> parent) 而不會向下傳遞，優先回傳最內層可見的可點擊子節點，
+     * 確保內外層監聽器 100% 都能收到點擊事件。
+     */
+    function resolveClickableButton(rawNode) {
+        if (!rawNode || rawNode.nodeType !== 1) return rawNode || null;
+        if (typeof rawNode.querySelectorAll !== 'function') return rawNode;
+
+        var prioritySelectors = [
+            'button',
+            '[role="button"]',
+            '.jfk-button',
+            '.goog-button',
+            '.goog-inline-block'
+        ];
+
+        function pickInnermostUsable(nodeList) {
+            var usable = [];
+            for (var i = 0; i < nodeList.length; i++) {
+                var candidate = nodeList[i];
+                if (candidate && candidate !== rawNode && isElementUsable(candidate)) {
+                    usable.push(candidate);
+                }
+            }
+            if (usable.length === 0) return null;
+
+            // 挑選最內層（不包含其他同級候選子節點）的可點擊按鈕
+            for (var a = 0; a < usable.length; a++) {
+                var outer = usable[a];
+                var containsOther = false;
+                for (var b = 0; b < usable.length; b++) {
+                    if (a === b) continue;
+                    if (typeof outer.contains === 'function' && outer.contains(usable[b])) {
+                        containsOther = true;
+                        break;
+                    }
+                }
+                if (!containsOther) {
+                    return outer;
+                }
+            }
+            return usable[usable.length - 1];
+        }
+
+        for (var s = 0; s < prioritySelectors.length; s++) {
+            try {
+                var matches = rawNode.querySelectorAll(prioritySelectors[s]);
+                var picked = pickInnermostUsable(matches);
+                if (picked) {
+                    return picked;
+                }
+            } catch (_e) {}
+        }
+
+        return rawNode;
+    }
+
+    /**
+     * Phase 17：穿透外層 Wrapper 點擊氣泡窗控制按鈕
+     * 優先對 resolveClickableButton(rawNode) 取得之最內層按鈕派發完整 simulateClick 序列；
+     * 絕不呼叫會捲動視埠的無參數 focus()。
+     */
+    function clickInfoWindowControl(rawNode, options) {
+        if (!rawNode) return false;
+        var opts = options || {};
+        var innerBtn = resolveClickableButton(rawNode);
+        var primaryTarget = innerBtn || rawNode;
+        var clicked = simulateClick(primaryTarget);
+
+        if (opts.alsoNativeClick) {
+            try {
+                if (typeof primaryTarget.click === 'function') {
+                    primaryTarget.click();
+                    clicked = true;
+                }
+            } catch (_e1) {}
+        }
+
+        if (opts.alsoClickWrapper && primaryTarget !== rawNode) {
+            clicked = simulateClick(rawNode) || clicked;
+            if (opts.alsoNativeClick) {
+                try {
+                    if (typeof rawNode.click === 'function') {
+                        rawNode.click();
+                        clicked = true;
+                    }
+                } catch (_e2) {}
+            }
+        }
+
+        return clicked;
+    }
+
+    /**
      * 設定輸入框文字並派發完整 input / change 事件
      */
     function setInputValueAndNotify(inputEl, text) {
         if (!inputEl) return false;
         try {
-            inputEl.focus();
+            focusWithoutScroll(inputEl);
             var proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
             var descriptor = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
             if (descriptor && typeof descriptor.set === 'function') {
@@ -1462,23 +1645,40 @@
     }
 
     /**
+     * Phase 16：統一氣泡窗可輸入欄位選擇器
+     * 完整涵蓋：
+     * - 沒有顯式 type="text" 屬性的 <input>
+     * - <textarea>
+     * - 任意 contenteditable（包含 contenteditable="true"、"plaintext-only"、""）與 [role="textbox"]
+     */
+    var INFOWINDOW_TEXT_INPUT_SELECTOR =
+        'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="file"])';
+    var INFOWINDOW_CONTENTEDITABLE_SELECTOR =
+        '[contenteditable]:not([contenteditable="false"]), [role="textbox"]';
+    var INFOWINDOW_EDITABLE_SELECTOR =
+        INFOWINDOW_TEXT_INPUT_SELECTOR + ', textarea, ' + INFOWINDOW_CONTENTEDITABLE_SELECTOR;
+
+    function isContentEditableNode(node) {
+        if (!node || node.nodeType !== 1) return false;
+        if (node.isContentEditable) return true;
+        if (node.hasAttribute && node.hasAttribute('contenteditable')) {
+            var ceVal = String(node.getAttribute('contenteditable') || '').toLowerCase();
+            if (ceVal !== 'false') return true;
+        }
+        return false;
+    }
+
+    /**
      * 解析實際可輸入文字的 DOM 節點（處理外層 wrapper div 包裹 input / textarea / contenteditable 的情況）
      */
     function resolveEditableNode(node) {
         if (!node) return null;
         var tag = (node.tagName || '').toUpperCase();
-        if (
-            tag === 'INPUT' ||
-            tag === 'TEXTAREA' ||
-            node.isContentEditable ||
-            (node.getAttribute && node.getAttribute('contenteditable') === 'true')
-        ) {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || isContentEditableNode(node)) {
             return node;
         }
         if (node.querySelector) {
-            var inner = node.querySelector(
-                'input[type="text"], textarea, [contenteditable="true"], input:not([type="hidden"]):not([type="checkbox"])'
-            );
+            var inner = node.querySelector(INFOWINDOW_EDITABLE_SELECTOR);
             if (inner && isElementUsable(inner)) {
                 return inner;
             }
@@ -1494,19 +1694,74 @@
         if (!resolved || !isElementUsable(resolved)) return false;
         var tag = (resolved.tagName || '').toUpperCase();
         if (tag === 'INPUT' || tag === 'TEXTAREA') {
+            if (tag === 'INPUT') {
+                var inputType = String(resolved.getAttribute('type') || resolved.type || 'text').toLowerCase();
+                if (
+                    inputType === 'hidden' ||
+                    inputType === 'checkbox' ||
+                    inputType === 'radio' ||
+                    inputType === 'button' ||
+                    inputType === 'submit' ||
+                    inputType === 'file'
+                ) {
+                    return false;
+                }
+            }
             return !resolved.disabled && !resolved.readOnly;
         }
-        if (
-            resolved.isContentEditable ||
-            (resolved.getAttribute && resolved.getAttribute('contenteditable') === 'true')
-        ) {
+        if (isContentEditableNode(resolved)) {
             return true;
         }
         return false;
     }
 
+    function getInfoWindowEditScopes() {
+        var scopes = [];
+        var candidates = [
+            document.getElementById('map-infowindow-container'),
+            findInfoWindowContainer(),
+            document.querySelector('.gm-style-iw-d'),
+            document.querySelector('.gm-style-iw-c'),
+            document.querySelector('.gm-style-iw')
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+            var c = candidates[i];
+            if (c && isElementUsable(c) && scopes.indexOf(c) === -1) {
+                scopes.push(c);
+            }
+        }
+        return scopes;
+    }
+
+    /**
+     * 在所有氣泡窗範圍內依 ID 尋找真正可編輯的節點（避免 document.getElementById 撞到重複 ID 的隱藏檢視 div）
+     */
+    function findEditableByAttrIds(ids, excludeChecker) {
+        for (var i = 0; i < ids.length; i++) {
+            var targetId = ids[i];
+            try {
+                var allWithId = document.querySelectorAll('[id="' + targetId.replace(/"/g, '\\"') + '"]');
+                for (var j = 0; j < allWithId.length; j++) {
+                    var node = allWithId[j];
+                    if (excludeChecker && excludeChecker(node)) continue;
+                    if (isNodeCurrentlyEditable(node)) {
+                        return resolveEditableNode(node);
+                    }
+                }
+            } catch (_e) {
+                var byId = document.getElementById(targetId);
+                if (byId && (!excludeChecker || !excludeChecker(byId)) && isNodeCurrentlyEditable(byId)) {
+                    return resolveEditableNode(byId);
+                }
+            }
+        }
+        return null;
+    }
+
     /**
      * 尋找氣泡窗內的「名稱 / 標題」欄位
+     * Phase 16：編輯模式下嚴格優先匹配真正可編輯 (isNodeCurrentlyEditable) 之節點，
+     * 順序：已知標題 ID -> 第一個可編輯 <input>（含無 type="text" 屬性者）-> 第一個可編輯 map-infowindow-attr-*-value -> 任意可編輯欄位。
      */
     function findInfoWindowTitleField() {
         var titleIds = [
@@ -1517,6 +1772,51 @@
             'map-infowindow-attr-title-value',
             'map-infowindow-attr-Title-value'
         ];
+        var container = findInfoWindowContainer();
+        var inEditMode = Boolean(container && isInfoWindowInEditMode(container));
+        var scopes = getInfoWindowEditScopes();
+
+        if (inEditMode) {
+            // 1. 優先已知標題 ID 內真正可編輯的節點（支援重複 ID 情況）
+            var byKnownTitleId = findEditableByAttrIds(titleIds, null);
+            if (byKnownTitleId) return byKnownTitleId;
+
+            // 2. 優先取氣泡窗內第一個可編輯的 <input>（完整涵蓋無 type="text" 屬性之 <input>，絕不誤抓空白 <textarea>）
+            for (var s1 = 0; s1 < scopes.length; s1++) {
+                var textInputs = scopes[s1].querySelectorAll(INFOWINDOW_TEXT_INPUT_SELECTOR);
+                for (var t1 = 0; t1 < textInputs.length; t1++) {
+                    var inputCandidate = textInputs[t1];
+                    if (inputCandidate.id === 'mapsprosearch-field') continue;
+                    if (isNodeCurrentlyEditable(inputCandidate)) {
+                        return inputCandidate;
+                    }
+                }
+            }
+
+            // 3. 次之取第一個可編輯的 [id^="map-infowindow-attr-"][id$="-value"]
+            for (var s2 = 0; s2 < scopes.length; s2++) {
+                var editAttrs = scopes[s2].querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
+                for (var a1 = 0; a1 < editAttrs.length; a1++) {
+                    if (isNodeCurrentlyEditable(editAttrs[a1])) {
+                        return resolveEditableNode(editAttrs[a1]);
+                    }
+                }
+            }
+
+            // 4. 備援：氣泡窗內任何可編輯欄位（含 contenteditable="plaintext-only" / "" / "true"）
+            for (var s3 = 0; s3 < scopes.length; s3++) {
+                var anyEditables = scopes[s3].querySelectorAll(INFOWINDOW_EDITABLE_SELECTOR);
+                for (var a2 = 0; a2 < anyEditables.length; a2++) {
+                    var cand = anyEditables[a2];
+                    if (cand.id === 'mapsprosearch-field') continue;
+                    if (isNodeCurrentlyEditable(cand)) {
+                        return cand;
+                    }
+                }
+            }
+        }
+
+        // 檢視模式或非編輯過渡期備援
         for (var i = 0; i < titleIds.length; i++) {
             var byId = document.getElementById(titleIds[i]);
             if (byId && isElementUsable(byId)) {
@@ -1524,20 +1824,15 @@
             }
         }
 
-        // 萬用語系匹配：Google My Maps 氣泡窗第一個 [id^="map-infowindow-attr-"][id$="-value"] 固定為標題欄位
-        var attrValues = document.querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
+        var attrValues = (container || document).querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
         for (var j = 0; j < attrValues.length; j++) {
             if (isElementUsable(attrValues[j])) {
                 return resolveEditableNode(attrValues[j]);
             }
         }
 
-        // 啟發式備援：在氣泡窗容器內尋找第一個可見的文字輸入框或 contenteditable 元素
-        var container = findInfoWindowContainer();
         if (container) {
-            var inputs = container.querySelectorAll(
-                'input[type="text"], [contenteditable="true"], textarea'
-            );
+            var inputs = container.querySelectorAll(INFOWINDOW_EDITABLE_SELECTOR);
             for (var k = 0; k < inputs.length; k++) {
                 var candidate = inputs[k];
                 if (candidate.id === 'mapsprosearch-field') continue;
@@ -1551,6 +1846,8 @@
 
     /**
      * 尋找氣泡窗內的「說明 / 備註」欄位
+     * Phase 16：編輯模式下嚴格優先匹配真正可編輯 (isNodeCurrentlyEditable) 之節點，
+     * 順序：已知說明 ID -> 第一個非 titleNode 的 <textarea> / contenteditable(含 plaintext-only) -> 第二個可編輯欄位。
      */
     function findInfoWindowDescField(titleNode) {
         var descIds = [
@@ -1561,40 +1858,77 @@
             'map-infowindow-attr-notes-value',
             'map-infowindow-attr-Notes-value'
         ];
-        for (var i = 0; i < descIds.length; i++) {
-            var byId = document.getElementById(descIds[i]);
-            if (byId && isElementUsable(byId)) {
-                var resolved = resolveEditableNode(byId);
-                if (resolved !== titleNode) {
-                    return resolved;
+        var resolvedTitle = titleNode ? resolveEditableNode(titleNode) : null;
+        function isSameAsTitle(node) {
+            if (!node) return false;
+            var r = resolveEditableNode(node);
+            return node === titleNode || r === titleNode || (resolvedTitle !== null && (node === resolvedTitle || r === resolvedTitle));
+        }
+
+        var container = findInfoWindowContainer();
+        var inEditMode = Boolean(container && isInfoWindowInEditMode(container));
+        var scopes = getInfoWindowEditScopes();
+
+        if (inEditMode) {
+            // 1. 優先已知說明 ID 內真正可編輯的節點（支援重複 ID 情況）
+            var byKnownDescId = findEditableByAttrIds(descIds, isSameAsTitle);
+            if (byKnownDescId) return byKnownDescId;
+
+            // 2. 優先取氣泡窗內第一個非 titleNode 的 <textarea> 或 contenteditable（含 plaintext-only / "" / "true"）
+            for (var s1 = 0; s1 < scopes.length; s1++) {
+                var multilineEditables = scopes[s1].querySelectorAll('textarea, ' + INFOWINDOW_CONTENTEDITABLE_SELECTOR);
+                for (var m1 = 0; m1 < multilineEditables.length; m1++) {
+                    var multiCand = multilineEditables[m1];
+                    if (multiCand.id === 'mapsprosearch-field') continue;
+                    if (!isSameAsTitle(multiCand) && isNodeCurrentlyEditable(multiCand)) {
+                        return multiCand;
+                    }
+                }
+            }
+
+            // 3. 次之取第二個可編輯的 [id^="map-infowindow-attr-"][id$="-value"] 或任意第二個可編輯欄位
+            for (var s2 = 0; s2 < scopes.length; s2++) {
+                var editAttrs = scopes[s2].querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
+                for (var a1 = 0; a1 < editAttrs.length; a1++) {
+                    if (isNodeCurrentlyEditable(editAttrs[a1]) && !isSameAsTitle(editAttrs[a1])) {
+                        return resolveEditableNode(editAttrs[a1]);
+                    }
+                }
+            }
+
+            for (var s3 = 0; s3 < scopes.length; s3++) {
+                var allEditables = scopes[s3].querySelectorAll(INFOWINDOW_EDITABLE_SELECTOR);
+                for (var a2 = 0; a2 < allEditables.length; a2++) {
+                    var cand = allEditables[a2];
+                    if (cand.id === 'mapsprosearch-field') continue;
+                    if (!isSameAsTitle(cand) && isNodeCurrentlyEditable(cand)) {
+                        return cand;
+                    }
                 }
             }
         }
 
-        // 萬用語系匹配：氣泡窗內第二個 [id^="map-infowindow-attr-"][id$="-value"] 欄位
-        var attrValues = document.querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
-        var usableAttrs = [];
-        for (var j = 0; j < attrValues.length; j++) {
-            if (isElementUsable(attrValues[j])) {
-                usableAttrs.push(resolveEditableNode(attrValues[j]));
-            }
-        }
-        for (var m = 0; m < usableAttrs.length; m++) {
-            if (usableAttrs[m] !== titleNode) {
-                return usableAttrs[m];
+        // 檢視模式或非編輯過渡期備援
+        for (var i = 0; i < descIds.length; i++) {
+            var byId = document.getElementById(descIds[i]);
+            if (byId && isElementUsable(byId) && !isSameAsTitle(byId)) {
+                return resolveEditableNode(byId);
             }
         }
 
-        // 啟發式備援：在氣泡窗容器內尋找非 titleNode 的 textarea 或第二個可編輯欄位
-        var container = findInfoWindowContainer();
+        var attrValues = (container || document).querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
+        for (var j = 0; j < attrValues.length; j++) {
+            if (isElementUsable(attrValues[j]) && !isSameAsTitle(attrValues[j])) {
+                return resolveEditableNode(attrValues[j]);
+            }
+        }
+
         if (container) {
-            var editables = container.querySelectorAll(
-                'textarea, [contenteditable="true"], input[type="text"]'
-            );
+            var editables = container.querySelectorAll(INFOWINDOW_EDITABLE_SELECTOR);
             for (var k = 0; k < editables.length; k++) {
                 var candidate = editables[k];
                 if (candidate.id === 'mapsprosearch-field') continue;
-                if (candidate !== titleNode && isElementUsable(candidate)) {
+                if (!isSameAsTitle(candidate) && isElementUsable(candidate)) {
                     return candidate;
                 }
             }
@@ -1650,7 +1984,90 @@
     }
 
     /**
+     * Phase 16：派發完整 Google Closure InputHandler & LabelInput 事件序列
+     * 注意：當原生 EditPinDialog 開啟於 WebView 上方時，WebView 未持有 Android 視窗焦點，
+     * 呼叫 el.focus() 不會同步觸發 DOM focus 事件，導致空說明欄的 goog.ui.LabelInput 維持 placeholder 狀態而存成空值！
+     * 因此寫入前必須先顯式派發 focus/focusin 並移除 label-input-label，再寫入值並派發完整鍵盤/輸入/變更/失焦事件。
+     */
+    function dispatchEditableFocusEvents(el) {
+        try {
+            if (typeof window.FocusEvent === 'function') {
+                el.dispatchEvent(new FocusEvent('focus', { bubbles: false }));
+                el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+            } else {
+                el.dispatchEvent(new Event('focus', { bubbles: false }));
+                el.dispatchEvent(new Event('focusin', { bubbles: true }));
+            }
+        } catch (_e) {}
+        try {
+            if (el.classList && el.classList.contains('label-input-label')) {
+                el.classList.remove('label-input-label');
+            }
+        } catch (_e2) {}
+    }
+
+    function dispatchEditableInputSequence(el, cleanText) {
+        var keyChar = cleanText ? cleanText.slice(-1) : 'Backspace';
+        try {
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                key: keyChar,
+                bubbles: true,
+                cancelable: true
+            }));
+        } catch (_e1) {}
+
+        try {
+            el.dispatchEvent(new KeyboardEvent('keypress', {
+                key: keyChar,
+                bubbles: true,
+                cancelable: true
+            }));
+        } catch (_e1b) {}
+
+        try {
+            if (typeof window.InputEvent === 'function') {
+                el.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    inputType: cleanText ? 'insertText' : 'deleteContentBackward',
+                    data: cleanText
+                }));
+            } else {
+                el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+            }
+        } catch (_e2) {
+            try {
+                el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+            } catch (_e2b) {}
+        }
+
+        try {
+            el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        } catch (_e3) {}
+
+        try {
+            el.dispatchEvent(new KeyboardEvent('keyup', {
+                key: keyChar,
+                bubbles: true,
+                cancelable: true
+            }));
+        } catch (_e4) {}
+
+        try {
+            if (typeof window.FocusEvent === 'function') {
+                el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+                el.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
+            } else {
+                el.dispatchEvent(new Event('focusout', { bubbles: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: false }));
+            }
+        } catch (_e5) {}
+    }
+
+    /**
      * 將文字寫入氣泡窗的 `<input>`、`<textarea>` 或 `contenteditable="true"` 元素，並派發完整 Closure 事件
+     * Phase 16：嚴格使用 focus({ preventScroll: true }) 且不對輸入框呼叫 simulateClick(el)，
+     * 寫入前先顯式觸發 focus/focusin 清除 goog.ui.LabelInput 狀態，杜絕空說明欄儲存為空字串。
      */
     function setEditableElementValue(rawEl, text) {
         var el = resolveEditableNode(rawEl);
@@ -1658,10 +2075,8 @@
         var cleanText = (text === null || text === undefined) ? '' : String(text);
 
         try {
-            simulateClick(el);
-            if (typeof el.focus === 'function') {
-                el.focus();
-            }
+            focusWithoutScroll(el);
+            dispatchEditableFocusEvents(el);
 
             var tag = (el.tagName || '').toUpperCase();
             if (tag === 'INPUT' || tag === 'TEXTAREA') {
@@ -1674,27 +2089,54 @@
                 } else {
                     el.value = cleanText;
                 }
-                el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-                el.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
-                el.dispatchEvent(new Event('blur', { bubbles: true }));
+                if (el.value !== cleanText) {
+                    el.value = cleanText;
+                }
+                dispatchEditableInputSequence(el, cleanText);
                 return true;
             }
 
-            // 處理 contenteditable="true" 或 Closure 屬性值容器
+            // 處理 contenteditable（含 plaintext-only / "" / "true"）或 Closure 屬性值容器
+            try {
+                if (window.getSelection && document.createRange) {
+                    var range = document.createRange();
+                    range.selectNodeContents(el);
+                    var sel = window.getSelection();
+                    if (sel) {
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    }
+                }
+            } catch (_selErr) {}
+
+            try {
+                if (typeof window.InputEvent === 'function') {
+                    el.dispatchEvent(new InputEvent('beforeinput', {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: cleanText ? 'insertText' : 'deleteContentBackward',
+                        data: cleanText
+                    }));
+                }
+            } catch (_biErr) {}
+
+            var execApplied = false;
             if (typeof document.execCommand === 'function') {
                 try {
-                    document.execCommand('selectAll', false, null);
-                    document.execCommand('insertText', false, cleanText);
+                    execApplied = Boolean(document.execCommand('insertText', false, cleanText));
                 } catch (_execErr) {}
             }
-            if ((el.textContent || '').trim() !== cleanText.trim()) {
-                el.textContent = cleanText;
+            if (!execApplied || (el.innerText || el.textContent || '').trim() !== cleanText.trim()) {
+                if (typeof el.innerText === 'string') {
+                    el.innerText = cleanText;
+                } else {
+                    el.textContent = cleanText;
+                }
+                if ((el.textContent || '').trim() !== cleanText.trim()) {
+                    el.textContent = cleanText;
+                }
             }
-            el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-            el.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
-            el.dispatchEvent(new Event('blur', { bubbles: true }));
+            dispatchEditableInputSequence(el, cleanText);
             return true;
         } catch (err) {
             console.warn('[MyGMap] setEditableElementValue error:', err);
@@ -1704,6 +2146,7 @@
                 } else {
                     el.textContent = cleanText;
                 }
+                dispatchEditableInputSequence(el, cleanText);
                 return true;
             } catch (_e2) {
                 return false;
@@ -1886,7 +2329,7 @@
                     var editBtn = findInfoWindowEditButton();
                     if (editBtn && isElementUsable(editBtn)) {
                         editButtonClicked = true;
-                        simulateClick(editBtn);
+                        clickInfoWindowControl(editBtn);
                         return;
                     }
                 }
@@ -1919,7 +2362,7 @@
                         var latestSaveBtn = findInfoWindowSaveButton();
                         var savedClicked = false;
                         if (latestSaveBtn) {
-                            savedClicked = simulateClick(latestSaveBtn);
+                            savedClicked = clickInfoWindowControl(latestSaveBtn);
                         } else if (titleField && (titleField.tagName || '').toUpperCase() === 'INPUT') {
                             dispatchEnterKey(titleField);
                             savedClicked = true;
@@ -2515,9 +2958,7 @@
         if (saveBtn && isElementUsable(saveBtn)) return true;
 
         try {
-            var editables = container.querySelectorAll(
-                'input:not([type="hidden"]):not([type="checkbox"]), textarea, [contenteditable="true"]'
-            );
+            var editables = container.querySelectorAll(INFOWINDOW_EDITABLE_SELECTOR);
             for (var i = 0; i < editables.length; i++) {
                 var ed = editables[i];
                 if (ed.id === 'mapsprosearch-field') continue;
@@ -2808,13 +3249,18 @@
         }
     }
 
-    function centerEditInfoWindowInViewport() {
-        if (!helperState.mobileMode) {
+    function centerEditInfoWindowInViewport(forceRecenter) {
+        if (!helperState.mobileMode || !helperState.webPinEditAllowed || helperState.nativePinEditing) {
             resetEditInfoWindowPosition();
             return;
         }
         var card = getEditInfoWindowCard();
         if (!card || !isElementUsable(card)) return;
+
+        // 避免在 MutationObserver 週期性觸發時反覆累加 margin 造成氣泡窗持續飄移
+        if (!forceRecenter && card.getAttribute('data-mygmap-centered') === 'true') {
+            return;
+        }
 
         var rect = card.getBoundingClientRect ? card.getBoundingClientRect() : null;
         if (!rect || rect.width <= 0 || rect.height <= 0) return;
@@ -2835,8 +3281,8 @@
 
         var prevDx = parseFloat(card.style.marginLeft || '0') || 0;
         var prevDy = parseFloat(card.style.marginTop || '0') || 0;
-        var nextDx = Math.round(prevDx + deltaX);
-        var nextDy = Math.round(prevDy + deltaY);
+        var nextDx = Math.max(-vw, Math.min(vw, Math.round(prevDx + deltaX)));
+        var nextDy = Math.max(-vh, Math.min(vh, Math.round(prevDy + deltaY)));
 
         card.setAttribute('data-mygmap-centered', 'true');
         card.style.setProperty('margin-left', nextDx + 'px', 'important');
@@ -2845,19 +3291,65 @@
 
     function applyInfoWindowBodyClasses(state) {
         if (!document.body) return;
-        if (!helperState.mobileMode || !state || !state.visible) {
+        if (!helperState.mobileMode) {
             document.body.classList.remove('mygmap-pin-view-hidden');
             document.body.classList.remove('mygmap-pin-editing');
+            document.body.classList.remove('mygmap-native-pin-editing');
+            document.body.classList.remove('mygmap-addtomap-visible');
+            resetEditInfoWindowPosition();
+            return;
+        }
+
+        // Phase 15：原生編輯期間一律維持網頁氣泡窗隱藏（opacity: 0 + pointer-events: none）
+        if (helperState.nativePinEditing) {
+            document.body.classList.add('mygmap-native-pin-editing');
+            document.body.classList.remove('mygmap-pin-editing');
+            document.body.classList.remove('mygmap-addtomap-visible');
+            resetEditInfoWindowPosition();
+            document.body.classList.add('mygmap-pin-view-hidden');
+            return;
+        }
+
+        // Phase 16：搜尋結果綠釘（含可見的 #addtomap-button）加上 mygmap-addtomap-visible 讓其正常顯示
+        var activeContainer = findInfoWindowContainer();
+        if (activeContainer && hasVisibleAddToMapButton(activeContainer)) {
+            helperState.webPinEditAllowed = false;
+            document.body.classList.add('mygmap-addtomap-visible');
+            document.body.classList.remove('mygmap-pin-view-hidden');
+            document.body.classList.remove('mygmap-pin-editing');
+            document.body.classList.remove('mygmap-native-pin-editing');
+            resetEditInfoWindowPosition();
+            return;
+        }
+        document.body.classList.remove('mygmap-addtomap-visible');
+
+        if (!state || !state.visible) {
+            helperState.webPinEditAllowed = false;
+            document.body.classList.remove('mygmap-pin-view-hidden');
+            document.body.classList.remove('mygmap-pin-editing');
+            document.body.classList.remove('mygmap-native-pin-editing');
             resetEditInfoWindowPosition();
             return;
         }
 
         if (state.isEditMode) {
-            document.body.classList.remove('mygmap-pin-view-hidden');
-            document.body.classList.add('mygmap-pin-editing');
-            centerEditInfoWindowInViewport();
+            // 僅於使用者明確點擊「改用原網頁編輯」逃生門時，才允許顯示原網頁編輯氣泡窗；
+            // 其餘時刻（包含取消/儲存過渡期）一律鎖定隱藏，杜絕氣泡窗閃現或飄移
+            if (helperState.webPinEditAllowed) {
+                document.body.classList.remove('mygmap-native-pin-editing');
+                document.body.classList.remove('mygmap-pin-view-hidden');
+                document.body.classList.add('mygmap-pin-editing');
+                centerEditInfoWindowInViewport(false);
+            } else {
+                document.body.classList.remove('mygmap-pin-editing');
+                resetEditInfoWindowPosition();
+                document.body.classList.add('mygmap-native-pin-editing');
+                document.body.classList.add('mygmap-pin-view-hidden');
+            }
         } else {
+            helperState.webPinEditAllowed = false;
             document.body.classList.remove('mygmap-pin-editing');
+            document.body.classList.remove('mygmap-native-pin-editing');
             resetEditInfoWindowPosition();
             document.body.classList.add('mygmap-pin-view-hidden');
         }
@@ -2925,11 +3417,41 @@
 
         var rating = extractPinRatingFromContainer(container);
 
-        // 3. 詳細資料 / 地址 / 備註整理（排除重複標題、評分數字與純座標字串）
+        // 3. 專用「說明 / 備註」擷取（保留換行，直接顯示於 SelectedPinBottomCard 的獨立說明區）
+        var description = '';
+        var usedDescNode = null;
+        var descAttrIds = [
+            'map-infowindow-attr-說明-value',
+            'map-infowindow-attr-description-value',
+            'map-infowindow-attr-Description-value',
+            'map-infowindow-attr-備註-value',
+            'map-infowindow-attr-notes-value',
+            'map-infowindow-attr-Notes-value'
+        ];
+        for (var dIdx = 0; dIdx < descAttrIds.length; dIdx++) {
+            var dNode = document.getElementById(descAttrIds[dIdx]);
+            if (dNode && isElementUsable(dNode) && dNode !== usedTitleNode) {
+                var rawDVal = ('value' in dNode && dNode.value)
+                    ? dNode.value
+                    : (dNode.innerText || dNode.textContent || '');
+                var trimmedDVal = String(rawDVal || '').replace(/\r\n/g, '\n').trim();
+                if (trimmedDVal && trimmedDVal !== title) {
+                    description = trimmedDVal;
+                    usedDescNode = dNode;
+                    break;
+                }
+            }
+        }
+
+        // 4. 詳細資料 / 地址 / 其他自訂欄位整理（排除重複標題、說明、評分數字與純座標字串）
         var detailParts = [];
+        var normalizedDesc = description.replace(/\s+/g, ' ').trim();
         function pushDetailPart(rawPart) {
             var cleaned = String(rawPart || '').replace(/\s+/g, ' ').trim();
             if (!cleaned || isBoilerplatePinLine(cleaned, title, rating)) return;
+            if (normalizedDesc && (cleaned === normalizedDesc || normalizedDesc.indexOf(cleaned) !== -1)) {
+                return;
+            }
             for (var idx = 0; idx < detailParts.length; idx++) {
                 if (detailParts[idx] === cleaned || detailParts[idx].indexOf(cleaned) !== -1) {
                     return;
@@ -2941,9 +3463,20 @@
         var attrNodes = container.querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
         for (var a = 0; a < attrNodes.length; a++) {
             var attrNode = attrNodes[a];
-            if (!isElementUsable(attrNode) || attrNode === usedTitleNode) continue;
-            var attrVal = ('value' in attrNode && attrNode.value) ? attrNode.value : (attrNode.textContent || '');
-            pushDetailPart(attrVal);
+            if (!isElementUsable(attrNode) || attrNode === usedTitleNode || attrNode === usedDescNode) continue;
+            var attrVal = ('value' in attrNode && attrNode.value)
+                ? attrNode.value
+                : (attrNode.innerText || attrNode.textContent || '');
+            var rawAttrStr = String(attrVal || '').replace(/\r\n/g, '\n').trim();
+            var cleanedAttr = rawAttrStr.replace(/\s+/g, ' ').trim();
+            if (!cleanedAttr || cleanedAttr === title) continue;
+            if (!description && !isBoilerplatePinLine(cleanedAttr, title, rating)) {
+                description = rawAttrStr;
+                usedDescNode = attrNode;
+                normalizedDesc = cleanedAttr;
+                continue;
+            }
+            pushDetailPart(cleanedAttr);
         }
 
         var buttonTexts = collectControlButtonTexts(container);
@@ -2972,6 +3505,7 @@
         return {
             visible: true,
             title: title,
+            description: description,
             details: details,
             rating: rating,
             coordinates: coordinates,
@@ -3063,10 +3597,885 @@
     }
 
     function scheduleSelectedPinStateChecks() {
-        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 80);
-        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 200);
-        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 450);
-        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 800);
+        if (typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(function () {
+                reportSelectedPinStateIfChanged(false);
+            });
+        }
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 25);
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 90);
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 220);
+        setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 500);
+    }
+
+    /**
+     * ========================================================================
+     * 9.6 Phase 15：原生 Material 3「✏️ 編輯地點」對話框背景讀寫、儲存、取消與刪除 API
+     * ========================================================================
+     */
+    var nativeEditPollTimer = null;
+
+    function clearNativeEditPollTimer() {
+        if (nativeEditPollTimer) {
+            clearInterval(nativeEditPollTimer);
+            nativeEditPollTimer = null;
+        }
+    }
+
+    function blurActiveWebElement() {
+        try {
+            if (document.activeElement && document.activeElement !== document.body && typeof document.activeElement.blur === 'function') {
+                document.activeElement.blur();
+            }
+        } catch (_e) {}
+    }
+
+    /**
+     * Phase 16：強制歸零視窗與地圖容器整條祖先鏈的 scrollLeft / scrollTop，
+     * 徹底根治背景輸入框焦點觸發 Chromium WebView 捲動 overflow:hidden 地圖容器導致偏移與卡死問題。
+     */
+    function resetMapViewportScrollLock(shouldBlur) {
+        try {
+            if (shouldBlur !== false) {
+                blurActiveWebElement();
+            }
+            if (typeof window.scrollTo === 'function') {
+                window.scrollTo(0, 0);
+            }
+            if (document.documentElement) {
+                document.documentElement.scrollLeft = 0;
+                document.documentElement.scrollTop = 0;
+            }
+            if (document.body) {
+                document.body.scrollLeft = 0;
+                document.body.scrollTop = 0;
+            }
+
+            var anchors = [
+                document.getElementById('map-canvas'),
+                document.getElementById('lyra-canvas'),
+                document.querySelector('.gm-style'),
+                document.querySelector('[data-mygmap-role="map-canvas"]')
+            ];
+            var visited = [];
+            for (var i = 0; i < anchors.length; i++) {
+                var node = anchors[i];
+                while (node && node.nodeType === 1) {
+                    if (visited.indexOf(node) !== -1) break;
+                    visited.push(node);
+                    if (node.scrollLeft !== 0) {
+                        node.scrollLeft = 0;
+                    }
+                    if (node.scrollTop !== 0) {
+                        node.scrollTop = 0;
+                    }
+                    node = node.parentElement;
+                }
+            }
+        } catch (err) {
+            console.warn('[MyGMap] resetMapViewportScrollLock error:', err);
+        }
+    }
+
+    function scheduleMapViewportScrollUnlock() {
+        resetMapViewportScrollLock(true);
+        if (typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(function () {
+                resetMapViewportScrollLock(true);
+            });
+        }
+        setTimeout(function () {
+            resetMapViewportScrollLock(true);
+        }, 100);
+        setTimeout(function () {
+            resetMapViewportScrollLock(true);
+        }, 350);
+    }
+
+    function findInfoWindowCancelButton() {
+        var cancelIds = [
+            'map-infowindow-cancel-editing-button',
+            'map-infowindow-cancel-button',
+            'infowindow-cancel-button'
+        ];
+        for (var i = 0; i < cancelIds.length; i++) {
+            var byId = document.getElementById(cancelIds[i]);
+            if (byId && isElementUsable(byId)) return byId;
+        }
+
+        var scopes = [];
+        var container = findInfoWindowContainer();
+        if (container) scopes.push(container);
+        var gmCard = document.querySelector('.gm-style-iw-c');
+        if (gmCard && scopes.indexOf(gmCard) === -1) scopes.push(gmCard);
+        scopes.push(document);
+
+        var selectors = [
+            '[id*="infowindow"][id*="cancel"]',
+            '[role="button"][aria-label*="取消"]',
+            '[role="button"][aria-label*="Cancel"]',
+            '[data-tooltip*="取消"]',
+            '[data-tooltip*="Cancel"]',
+            '[title*="取消"]',
+            '[title*="Cancel"]'
+        ];
+        for (var s = 0; s < scopes.length; s++) {
+            var scope = scopes[s];
+            for (var j = 0; j < selectors.length; j++) {
+                try {
+                    var matched = scope.querySelector(selectors[j]);
+                    if (matched && isElementUsable(matched)) return matched;
+                } catch (_e) {}
+            }
+
+            var buttons = scope.querySelectorAll('button, [role="button"], div.goog-inline-block, div.jfk-button');
+            for (var k = 0; k < buttons.length; k++) {
+                var btn = buttons[k];
+                if (!isElementUsable(btn)) continue;
+                var txt = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+                if (txt === '取消' || txt === 'Cancel') {
+                    return btn;
+                }
+            }
+        }
+        return null;
+    }
+
+    function findInfoWindowDeleteButton() {
+        var deleteIds = [
+            'map-infowindow-delete-button',
+            'infowindow-delete-button'
+        ];
+        for (var i = 0; i < deleteIds.length; i++) {
+            var byId = document.getElementById(deleteIds[i]);
+            if (byId && isElementUsable(byId)) return byId;
+        }
+
+        var scope = findInfoWindowContainer() || document;
+        var selectors = [
+            '[id*="infowindow"][id*="delete"]',
+            '[role="button"][aria-label*="刪除"]',
+            '[role="button"][aria-label*="Delete"]',
+            '[data-tooltip*="刪除"]',
+            '[data-tooltip*="Delete"]',
+            '[title*="刪除"]',
+            '[title*="Delete"]'
+        ];
+        for (var j = 0; j < selectors.length; j++) {
+            try {
+                var matched = scope.querySelector(selectors[j]);
+                if (matched && isElementUsable(matched)) return matched;
+            } catch (_e) {}
+        }
+        return null;
+    }
+
+    function readEditableFieldValue(node) {
+        var el = resolveEditableNode(node);
+        if (!el) return '';
+        var tag = (el.tagName || '').toUpperCase();
+        if (tag === 'INPUT' || tag === 'TEXTAREA') {
+            return String(el.value || '');
+        }
+        if (typeof el.innerText === 'string') {
+            return el.innerText;
+        }
+        return String(el.textContent || '');
+    }
+
+    function extractAttrFieldLabel(rawNode, resolvedNode, fallbackIndex) {
+        var rawId = (rawNode && rawNode.id) ? String(rawNode.id) : '';
+        var idMatch = rawId.match(/^map-infowindow-attr-(.+)-value$/i);
+        if (idMatch && idMatch[1]) {
+            var attrKey = idMatch[1];
+            var nameEl = document.getElementById('map-infowindow-attr-' + attrKey + '-name');
+            if (nameEl) {
+                var nameText = ((nameEl.innerText || nameEl.textContent || '') + '').replace(/\s+/g, ' ').trim();
+                if (nameText) return nameText;
+            }
+            if (attrKey) return attrKey;
+        }
+        var target = resolvedNode || rawNode;
+        if (target && target.getAttribute) {
+            var lbl = target.getAttribute('aria-label') || target.getAttribute('placeholder') || target.getAttribute('title') || '';
+            lbl = String(lbl).replace(/\s+/g, ' ').trim();
+            if (lbl) return lbl;
+        }
+        return '欄位 ' + (fallbackIndex + 1);
+    }
+
+    function collectNativePinEditFormData() {
+        var container = findInfoWindowContainer();
+        var scope = container || document;
+        var titleField = findInfoWindowTitleField();
+        var descField = findInfoWindowDescField(titleField);
+
+        var titleVal = titleField ? readEditableFieldValue(titleField) : '';
+        var descVal = descField ? readEditableFieldValue(descField) : '';
+
+        var extraFields = [];
+        try {
+            var resolvedTitleField = titleField ? resolveEditableNode(titleField) : null;
+            var resolvedDescField = descField ? resolveEditableNode(descField) : null;
+            var inEditMode = Boolean(container && isInfoWindowInEditMode(container));
+            var attrNodes = scope.querySelectorAll('[id^="map-infowindow-attr-"][id$="-value"]');
+            for (var i = 0; i < attrNodes.length; i++) {
+                var attrNode = attrNodes[i];
+                if (!isElementUsable(attrNode)) continue;
+                if (inEditMode && !isNodeCurrentlyEditable(attrNode)) continue;
+                var resolved = resolveEditableNode(attrNode);
+                if (
+                    !resolved ||
+                    resolved === titleField ||
+                    resolved === descField ||
+                    (resolvedTitleField && resolved === resolvedTitleField) ||
+                    (resolvedDescField && resolved === resolvedDescField)
+                ) {
+                    continue;
+                }
+
+                var fVal = readEditableFieldValue(resolved);
+                var fTag = (resolved.tagName || '').toUpperCase();
+                var isMultiline = (fTag === 'TEXTAREA') ||
+                    Boolean(resolved.isContentEditable) ||
+                    (fVal.indexOf('\n') !== -1) ||
+                    (fVal.length > 60);
+
+                extraFields.push({
+                    id: attrNode.id || resolved.id || ('extra-' + extraFields.length),
+                    label: extractAttrFieldLabel(attrNode, resolved, extraFields.length),
+                    value: fVal,
+                    multiline: isMultiline
+                });
+            }
+        } catch (_e) {}
+
+        var canDelete = Boolean(findInfoWindowDeleteButton());
+        var photoBtn = document.getElementById('map-infowindow-photo-button');
+        var styleBtn = document.getElementById('map-infowindow-style-button');
+        var canEditPhoto = Boolean(photoBtn && isElementUsable(photoBtn));
+        var canEditStyle = Boolean(styleBtn && isElementUsable(styleBtn));
+
+        var hasEditable = Boolean(
+            (titleField && isNodeCurrentlyEditable(titleField)) ||
+            (descField && isNodeCurrentlyEditable(descField)) ||
+            findInfoWindowSaveButton()
+        );
+
+        return {
+            hasEditable: hasEditable,
+            title: titleVal,
+            description: descVal,
+            extraFields: extraFields,
+            canDelete: canDelete,
+            canEditPhoto: canEditPhoto,
+            canEditStyle: canEditStyle
+        };
+    }
+
+    function reportPinEditFormReady(payload) {
+        var safePayload = {
+            ok: Boolean(payload && payload.ok),
+            title: String((payload && payload.title) || ''),
+            description: String((payload && payload.description) || ''),
+            extraFields: Array.isArray(payload && payload.extraFields) ? payload.extraFields : [],
+            canDelete: Boolean(payload && payload.canDelete),
+            canEditPhoto: Boolean(payload && payload.canEditPhoto),
+            canEditStyle: Boolean(payload && payload.canEditStyle),
+            errorMessage: String((payload && payload.errorMessage) || '')
+        };
+        var jsonStr = JSON.stringify(safePayload);
+        try {
+            if (window.AndroidBridge && typeof window.AndroidBridge.onPinEditFormReady === 'function') {
+                window.AndroidBridge.onPinEditFormReady(jsonStr);
+            }
+        } catch (err) {
+            console.warn('[MyGMap] AndroidBridge.onPinEditFormReady error:', err);
+        }
+    }
+
+    function reportPinEditResult(payload) {
+        var safePayload = {
+            ok: Boolean(payload && payload.ok),
+            action: String((payload && payload.action) || 'save'),
+            message: String((payload && payload.message) || '')
+        };
+        var jsonStr = JSON.stringify(safePayload);
+        try {
+            if (window.AndroidBridge && typeof window.AndroidBridge.onPinEditResult === 'function') {
+                window.AndroidBridge.onPinEditResult(jsonStr);
+            }
+        } catch (err) {
+            console.warn('[MyGMap] AndroidBridge.onPinEditResult error:', err);
+        }
+    }
+
+    /**
+     * Phase 16 重大架構升級（零漂移延遲開啟編輯）：
+     * 點選「✏️ 編輯」開啟原生 EditPinDialog 時，直接從檢視模式 DOM 讀取標題、說明、自訂欄位與權限，
+     * 不再提前點擊網頁 #map-infowindow-edit-button（徹底杜絕一點選編輯就把背景地圖往左推！），
+     * 僅於使用者實際按下「💾 儲存」時才於背景進入編輯、回寫並儲存。
+     */
+    function openNativePinEdit() {
+        clearNativeEditPollTimer();
+        var container = findInfoWindowContainer();
+        var preViewState = extractSelectedPinUiState();
+
+        if (!container || !preViewState || !preViewState.visible) {
+            reportPinEditFormReady({
+                ok: false,
+                title: '',
+                description: '',
+                extraFields: [],
+                canDelete: false,
+                canEditPhoto: false,
+                canEditStyle: false,
+                errorMessage: '⚠️ 目前未選取可編輯的地點，請先點擊地圖上的圖釘'
+            });
+            return true;
+        }
+
+        var alreadyEditing = isInfoWindowInEditMode(container);
+        var editBtn = alreadyEditing ? null : findInfoWindowEditButton();
+        if (!alreadyEditing && !editBtn) {
+            reportPinEditFormReady({
+                ok: false,
+                title: '',
+                description: '',
+                extraFields: [],
+                canDelete: false,
+                canEditPhoto: false,
+                canEditStyle: false,
+                errorMessage: '⚠️ 此地圖或地點目前無法編輯（可能為唯讀檢視模式）'
+            });
+            return true;
+        }
+
+        helperState.webPinEditAllowed = false;
+        helperState.nativePinEditing = true;
+        applyBodyClasses();
+
+        var preViewCanDelete = Boolean(findInfoWindowDeleteButton());
+        var prePhotoBtn = document.getElementById('map-infowindow-photo-button');
+        var preStyleBtn = document.getElementById('map-infowindow-style-button');
+        var preViewCanEditPhoto = Boolean(prePhotoBtn && isElementUsable(prePhotoBtn));
+        var preViewCanEditStyle = Boolean(preStyleBtn && isElementUsable(preStyleBtn));
+
+        var formData = collectNativePinEditFormData();
+        var preViewTitle = String(preViewState.title || '').trim();
+        var preViewDescription = String(preViewState.description || '').trim();
+        var resolvedTitle = String(formData.title || '').trim() ? formData.title : preViewTitle;
+        var resolvedDesc = String(formData.description || '').trim() ? formData.description : preViewDescription;
+
+        reportPinEditFormReady({
+            ok: true,
+            title: resolvedTitle,
+            description: resolvedDesc,
+            extraFields: formData.extraFields || [],
+            canDelete: formData.canDelete || preViewCanDelete,
+            canEditPhoto: formData.canEditPhoto || preViewCanEditPhoto,
+            canEditStyle: formData.canEditStyle || preViewCanEditStyle,
+            errorMessage: ''
+        });
+        return true;
+    }
+
+    /**
+     * Phase 15 / Phase 16：將原生 EditPinDialog 的修改內容寫回背景氣泡窗並自動觸發儲存。
+     * Phase 16 強化：支援延遲進入背景編輯模式、等待可編輯欄位真正掛載完成再寫入，
+     * 若有填寫說明卻未找到背景說明欄時明確回報錯誤而非假性成功。
+     */
+    function saveNativePinEdit(payloadJson) {
+        clearNativeEditPollTimer();
+        helperState.webPinEditAllowed = false;
+        helperState.nativePinEditing = true;
+        applyBodyClasses();
+        resetMapViewportScrollLock(false);
+
+        var data = null;
+        try {
+            data = (typeof payloadJson === 'string') ? JSON.parse(payloadJson) : payloadJson;
+        } catch (err) {
+            helperState.nativePinEditing = false;
+            applyBodyClasses();
+            scheduleMapViewportScrollUnlock();
+            reportPinEditResult({
+                ok: false,
+                action: 'save',
+                message: '⚠️ 儲存資料格式異常，請重試'
+            });
+            return false;
+        }
+
+        var nextTitle = (data && data.title !== undefined && data.title !== null) ? String(data.title) : '';
+        var nextDesc = (data && data.description !== undefined && data.description !== null) ? String(data.description) : '';
+        var nextExtras = (data && Array.isArray(data.extraFields)) ? data.extraFields : [];
+
+        function performWriteAndSave() {
+            var titleField = findInfoWindowTitleField();
+            var descField = findInfoWindowDescField(titleField);
+
+            if (!titleField && !descField) {
+                helperState.nativePinEditing = false;
+                applyBodyClasses();
+                scheduleMapViewportScrollUnlock();
+                reportPinEditResult({
+                    ok: false,
+                    action: 'save',
+                    message: '⚠️ 找不到背景編輯欄位，請點選「改用原網頁編輯」'
+                });
+                return;
+            }
+
+            if (nextDesc.trim() && !descField) {
+                helperState.nativePinEditing = false;
+                applyBodyClasses();
+                scheduleMapViewportScrollUnlock();
+                reportPinEditResult({
+                    ok: false,
+                    action: 'save',
+                    message: '⚠️ 找不到背景「說明」輸入欄位，請點選「改用原網頁編輯」輸入說明'
+                });
+                return;
+            }
+
+            var wroteAny = false;
+            if (titleField) {
+                wroteAny = setEditableElementValue(titleField, nextTitle) || wroteAny;
+                resetMapViewportScrollLock(false);
+            }
+            if (descField) {
+                wroteAny = setEditableElementValue(descField, nextDesc) || wroteAny;
+                // Phase 17：寫入後即時驗證，若因 Google Closure LabelInput 狀態未寫入，立即補做直接寫入並重派完整事件
+                var verifiedDesc = readEditableFieldValue(descField);
+                if (verifiedDesc !== nextDesc) {
+                    var resolvedDesc = resolveEditableNode(descField) || descField;
+                    try {
+                        focusWithoutScroll(resolvedDesc);
+                        dispatchEditableFocusEvents(resolvedDesc);
+                        var dTag = (resolvedDesc.tagName || '').toUpperCase();
+                        if (dTag === 'INPUT' || dTag === 'TEXTAREA') {
+                            resolvedDesc.value = nextDesc;
+                        } else {
+                            if (typeof resolvedDesc.innerText === 'string') {
+                                resolvedDesc.innerText = nextDesc;
+                            }
+                            resolvedDesc.textContent = nextDesc;
+                        }
+                        dispatchEditableInputSequence(resolvedDesc, nextDesc);
+                        wroteAny = true;
+                    } catch (_descRetryErr) {}
+                }
+                resetMapViewportScrollLock(false);
+            }
+            for (var i = 0; i < nextExtras.length; i++) {
+                var item = nextExtras[i];
+                if (!item || !item.id) continue;
+                var extraNode = findEditableByAttrIds([item.id], null) || document.getElementById(item.id);
+                if (extraNode) {
+                    setEditableElementValue(extraNode, item.value !== undefined && item.value !== null ? String(item.value) : '');
+                    resetMapViewportScrollLock(false);
+                    wroteAny = true;
+                }
+            }
+
+            // Phase 17：延遲 260ms 確保 Google Closure InputHandler 已同步所有欄位變更，再穿透 Wrapper 點擊真正內層儲存按鈕
+            setTimeout(function () {
+                var saveBtn = findInfoWindowSaveButton();
+                if (saveBtn) {
+                    clickInfoWindowControl(saveBtn);
+                } else if (titleField && (titleField.tagName || '').toUpperCase() === 'INPUT') {
+                    dispatchEnterKey(titleField);
+                }
+                resetMapViewportScrollLock(true);
+
+                helperState.webPinEditAllowed = false;
+                helperState.userDismissedPinJson = '';
+                helperState.lastReportedPinStateJson = '';
+
+                function finishSaveSuccess() {
+                    clearNativeEditPollTimer();
+                    helperState.nativePinEditing = false;
+                    helperState.webPinEditAllowed = false;
+                    if (document.body) {
+                        document.body.classList.remove('mygmap-native-pin-editing');
+                        document.body.classList.remove('mygmap-pin-editing');
+                    }
+                    applyBodyClasses();
+                    blurActiveWebElement();
+                    resetMapViewportScrollLock(true);
+                    scheduleMapViewportScrollUnlock();
+                    reportSelectedPinStateIfChanged(true);
+                    setTimeout(function () {
+                        resetMapViewportScrollLock(true);
+                        reportSelectedPinStateIfChanged(true);
+                    }, 220);
+                    setTimeout(function () {
+                        resetMapViewportScrollLock(true);
+                        reportSelectedPinStateIfChanged(true);
+                    }, 520);
+
+                    reportPinEditResult({
+                        ok: true,
+                        action: 'save',
+                        message: '✅ 已儲存地點變更'
+                    });
+                }
+
+                // 若第一次點擊已同步退出編輯模式，直接完成成功流程
+                var immediateContainer = findInfoWindowContainer();
+                if (!immediateContainer || !isInfoWindowInEditMode(immediateContainer)) {
+                    finishSaveSuccess();
+                    return;
+                }
+
+                // Phase 17：多階段可靠儲存點擊與嚴格結果回報（最長 2000ms，每 90ms 檢查，嚴禁逾時假性成功）
+                var saveWaitStart = Date.now();
+                var stage1Retried = false;
+                var stage2Retried = false;
+                nativeEditPollTimer = setInterval(function () {
+                    resetMapViewportScrollLock(true);
+                    var liveContainer = findInfoWindowContainer();
+                    var stillEditing = Boolean(liveContainer && isInfoWindowInEditMode(liveContainer));
+                    var elapsed = Date.now() - saveWaitStart;
+
+                    if (!stillEditing) {
+                        finishSaveSuccess();
+                        return;
+                    }
+
+                    // 階段 1 (300ms)：對內層按鈕與外層 Wrapper 依序嘗試 .click() + simulateClick()
+                    if (!stage1Retried && elapsed >= 300) {
+                        stage1Retried = true;
+                        var retrySaveBtn = findInfoWindowSaveButton() || saveBtn;
+                        if (retrySaveBtn) {
+                            clickInfoWindowControl(retrySaveBtn, {
+                                alsoNativeClick: true,
+                                alsoClickWrapper: true
+                            });
+                            resetMapViewportScrollLock(true);
+                        }
+                        return;
+                    }
+
+                    // 階段 2 (750ms)：遍歷 saveBtn 內所有 [role="button"], button, .jfk-button 子元素與文字為「儲存 / Save」之節點逐一觸發
+                    if (!stage2Retried && elapsed >= 750) {
+                        stage2Retried = true;
+                        var deepSaveBtn = findInfoWindowSaveButton() || saveBtn;
+                        var clickedNodes = [];
+                        function triggerOnce(node) {
+                            if (!node || clickedNodes.indexOf(node) !== -1) return;
+                            clickedNodes.push(node);
+                            simulateClick(node);
+                            try {
+                                if (typeof node.click === 'function') {
+                                    node.click();
+                                }
+                            } catch (_e) {}
+                        }
+                        if (deepSaveBtn && typeof deepSaveBtn.querySelectorAll === 'function') {
+                            var subBtns = deepSaveBtn.querySelectorAll('[role="button"], button, .jfk-button');
+                            for (var sb = 0; sb < subBtns.length; sb++) {
+                                if (isElementUsable(subBtns[sb])) {
+                                    triggerOnce(subBtns[sb]);
+                                }
+                            }
+                            var allDescendants = deepSaveBtn.querySelectorAll('*');
+                            for (var ad = 0; ad < allDescendants.length; ad++) {
+                                var descEl = allDescendants[ad];
+                                if (!isElementUsable(descEl)) continue;
+                                var dTxt = (descEl.textContent || '').replace(/\s+/g, ' ').trim();
+                                if (dTxt === '儲存' || dTxt === 'Save' || dTxt === '完成' || dTxt === 'Done') {
+                                    triggerOnce(descEl);
+                                }
+                            }
+                            triggerOnce(deepSaveBtn);
+                        } else if (deepSaveBtn) {
+                            triggerOnce(deepSaveBtn);
+                        }
+                        resetMapViewportScrollLock(true);
+                        return;
+                    }
+
+                    // 超過 2000ms 仍為 stillEditing === true：嚴禁假報 ok: true，先嘗試取消退出編輯模式避免地圖被鎖死回彈
+                    if (elapsed >= 2000) {
+                        clearNativeEditPollTimer();
+                        cancelNativePinEdit();
+                        helperState.nativePinEditing = false;
+                        helperState.webPinEditAllowed = false;
+                        if (document.body) {
+                            document.body.classList.remove('mygmap-native-pin-editing');
+                            document.body.classList.remove('mygmap-pin-editing');
+                        }
+                        applyBodyClasses();
+                        blurActiveWebElement();
+                        resetMapViewportScrollLock(true);
+                        reportPinEditResult({
+                            ok: false,
+                            action: 'save',
+                            message: '⚠️ 背景儲存未生效，已還原狀態，請點「改用原網頁編輯」試試'
+                        });
+                    }
+                }, 90);
+            }, 260);
+        }
+
+        function hasReadyEditableFields() {
+            var liveContainer = findInfoWindowContainer();
+            if (!liveContainer || !isInfoWindowInEditMode(liveContainer)) return false;
+            var tf = findInfoWindowTitleField();
+            var df = findInfoWindowDescField(tf);
+            var titleReady = Boolean(tf && isNodeCurrentlyEditable(tf));
+            var descReady = Boolean(df && isNodeCurrentlyEditable(df));
+            // Phase 17：當 nextDesc 非空時，必須等到 descField 也真正可編輯才進入寫入，不可因 titleField 先就緒就提早寫入
+            if (nextDesc.trim().length > 0) {
+                return descReady;
+            }
+            return titleReady || descReady;
+        }
+
+        if (hasReadyEditableFields()) {
+            performWriteAndSave();
+            return true;
+        }
+
+        // 延遲進入背景編輯模式：點擊編輯按鈕並輪詢直到可編輯欄位真正掛載完成
+        var editBtn = findInfoWindowEditButton();
+        if (editBtn) {
+            clickInfoWindowControl(editBtn);
+            resetMapViewportScrollLock(true);
+        }
+        var waitStart = Date.now();
+        nativeEditPollTimer = setInterval(function () {
+            resetMapViewportScrollLock(true);
+            if (hasReadyEditableFields() || Date.now() - waitStart >= 1200) {
+                clearNativeEditPollTimer();
+                performWriteAndSave();
+            }
+        }, 60);
+        return true;
+    }
+
+    /**
+     * Phase 15 / Phase 16：取消原生編輯；若網頁本來就還在檢視模式（未點過編輯鈕），直接解除鎖定、零地圖移動。
+     */
+    function cancelNativePinEdit() {
+        clearNativeEditPollTimer();
+        helperState.webPinEditAllowed = false;
+
+        var container = findInfoWindowContainer();
+        if (!container || !isInfoWindowInEditMode(container)) {
+            helperState.nativePinEditing = false;
+            applyBodyClasses();
+            resetMapViewportScrollLock(true);
+            return true;
+        }
+
+        helperState.nativePinEditing = true;
+        applyBodyClasses();
+        resetMapViewportScrollLock(true);
+
+        function triggerCancelAttempt(useFallbackEscape) {
+            var cancelBtn = findInfoWindowCancelButton();
+            if (cancelBtn) {
+                clickInfoWindowControl(cancelBtn, {
+                    alsoNativeClick: Boolean(useFallbackEscape),
+                    alsoClickWrapper: Boolean(useFallbackEscape)
+                });
+            }
+            if (useFallbackEscape) {
+                try {
+                    var escTarget = findInfoWindowTitleField() || findInfoWindowContainer() || document;
+                    escTarget.dispatchEvent(new KeyboardEvent('keydown', {
+                        key: 'Escape',
+                        code: 'Escape',
+                        keyCode: 27,
+                        which: 27,
+                        bubbles: true,
+                        cancelable: true
+                    }));
+                } catch (_e2) {}
+            }
+            resetMapViewportScrollLock(true);
+        }
+
+        triggerCancelAttempt(false);
+
+        var immediateContainer = findInfoWindowContainer();
+        if (!immediateContainer || !isInfoWindowInEditMode(immediateContainer)) {
+            helperState.nativePinEditing = false;
+            helperState.userDismissedPinJson = '';
+            helperState.lastReportedPinStateJson = '';
+            if (document.body) {
+                document.body.classList.remove('mygmap-native-pin-editing');
+                document.body.classList.remove('mygmap-pin-editing');
+            }
+            applyBodyClasses();
+            scheduleMapViewportScrollUnlock();
+            reportSelectedPinStateIfChanged(true);
+            setTimeout(function () { reportSelectedPinStateIfChanged(true); }, 200);
+            return true;
+        }
+
+        var startedAt = Date.now();
+        var retried = false;
+        nativeEditPollTimer = setInterval(function () {
+            resetMapViewportScrollLock(true);
+            var liveContainer = findInfoWindowContainer();
+            var stillEditing = Boolean(liveContainer && isInfoWindowInEditMode(liveContainer));
+            var elapsed = Date.now() - startedAt;
+
+            if (!stillEditing) {
+                clearNativeEditPollTimer();
+                helperState.nativePinEditing = false;
+                helperState.userDismissedPinJson = '';
+                helperState.lastReportedPinStateJson = '';
+                applyBodyClasses();
+                scheduleMapViewportScrollUnlock();
+                reportSelectedPinStateIfChanged(true);
+                setTimeout(function () { reportSelectedPinStateIfChanged(true); }, 200);
+                return;
+            }
+
+            if (!retried && elapsed >= 180) {
+                retried = true;
+                triggerCancelAttempt(true);
+                return;
+            }
+
+            if (elapsed >= 900) {
+                clearNativeEditPollTimer();
+                helperState.nativePinEditing = false;
+                helperState.userDismissedPinJson = '';
+                helperState.lastReportedPinStateJson = '';
+                applyBodyClasses();
+                scheduleMapViewportScrollUnlock();
+                reportSelectedPinStateIfChanged(true);
+            }
+        }, 90);
+
+        return true;
+    }
+
+    /**
+     * Phase 15 / Phase 16：刪除目前選取的圖釘（若背景處於編輯模式先取消返回檢視再點擊刪除按鈕，並自動處理確認對話框）
+     */
+    function deleteSelectedPin() {
+        clearNativeEditPollTimer();
+        helperState.webPinEditAllowed = false;
+        helperState.nativePinEditing = false;
+        resetMapViewportScrollLock(true);
+
+        function clickConfirmDialogIfPresent() {
+            try {
+                var dialogs = document.querySelectorAll('[role="dialog"], .modal-dialog');
+                for (var d = 0; d < dialogs.length; d++) {
+                    var dlg = dialogs[d];
+                    if (!isElementUsable(dlg)) continue;
+                    var btns = dlg.querySelectorAll('button, [role="button"], .jfk-button');
+                    for (var b = 0; b < btns.length; b++) {
+                        var btn = btns[b];
+                        if (!isElementUsable(btn)) continue;
+                        var txt = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (/^(刪除|Delete|確定|確認|OK)$/i.test(txt)) {
+                            simulateClick(btn);
+                            return true;
+                        }
+                    }
+                }
+            } catch (_e) {}
+            return false;
+        }
+
+        function triggerDeleteButton(delBtn) {
+            var ok = clickInfoWindowControl(delBtn);
+            scheduleMapViewportScrollUnlock();
+            setTimeout(function () {
+                clickConfirmDialogIfPresent();
+                applyBodyClasses();
+                resetMapViewportScrollLock(true);
+                helperState.userDismissedPinJson = '';
+                helperState.lastReportedPinStateJson = '';
+                reportSelectedPinStateIfChanged(true);
+            }, 180);
+            setTimeout(function () {
+                resetMapViewportScrollLock(true);
+                reportSelectedPinStateIfChanged(true);
+            }, 480);
+            setTimeout(function () { reportSelectedPinStateIfChanged(true); }, 880);
+
+            reportPinEditResult({
+                ok: ok,
+                action: 'delete',
+                message: ok ? '🗑️ 已刪除地點' : '⚠️ 無法觸發刪除按鈕'
+            });
+            return ok;
+        }
+
+        var directDeleteBtn = findInfoWindowDeleteButton();
+        if (directDeleteBtn) {
+            return triggerDeleteButton(directDeleteBtn);
+        }
+
+        // 若目前在編輯模式導致刪除按鈕暫時隱藏，先退出編輯再尋找刪除按鈕
+        var cancelBtn = findInfoWindowCancelButton();
+        if (cancelBtn) {
+            clickInfoWindowControl(cancelBtn);
+            resetMapViewportScrollLock(true);
+            setTimeout(function () {
+                var retryDeleteBtn = findInfoWindowDeleteButton();
+                if (retryDeleteBtn) {
+                    triggerDeleteButton(retryDeleteBtn);
+                } else {
+                    applyBodyClasses();
+                    scheduleMapViewportScrollUnlock();
+                    reportPinEditResult({
+                        ok: false,
+                        action: 'delete',
+                        message: '⚠️ 找不到刪除按鈕，請改用原網頁編輯刪除'
+                    });
+                }
+            }, 220);
+            return true;
+        }
+
+        applyBodyClasses();
+        scheduleMapViewportScrollUnlock();
+        reportPinEditResult({
+            ok: false,
+            action: 'delete',
+            message: '⚠️ 找不到刪除按鈕，請改用原網頁編輯刪除'
+        });
+        return false;
+    }
+
+    /**
+     * Phase 15 逃生門：關閉原生編輯模式並切回原網頁氣泡窗編輯介面（供上傳相片/修改圖釘樣式使用）
+     */
+    function fallbackToWebPinEdit() {
+        clearNativeEditPollTimer();
+        helperState.webPinEditAllowed = true;
+        helperState.nativePinEditing = false;
+
+        if (document.body) {
+            document.body.classList.remove('mygmap-native-pin-editing');
+        }
+
+        var container = findInfoWindowContainer();
+        if (container && !isInfoWindowInEditMode(container)) {
+            var editBtn = findInfoWindowEditButton();
+            if (editBtn) {
+                clickInfoWindowControl(editBtn);
+            }
+        }
+
+        applyBodyClasses();
+        applyInfoWindowBodyClasses({ visible: true, isEditMode: true });
+        setTimeout(function () {
+            centerEditInfoWindowInViewport(true);
+            reportSelectedPinStateIfChanged(true);
+        }, 160);
+        return true;
     }
 
     /**
@@ -3109,7 +4518,7 @@
             if (!editBtn) {
                 return false;
             }
-            var ok = simulateClick(editBtn);
+            var ok = clickInfoWindowControl(editBtn);
             scheduleSelectedPinStateChecks();
             setTimeout(function () { reportSelectedPinStateIfChanged(false); }, 1100);
             return ok;
@@ -3379,7 +4788,29 @@
         syncDrawerBackdropBounds: syncDrawerBackdropBounds,
 
         /** Phase 14：同步私有圖層父層解鎖標記 */
-        syncLayerPanelShells: syncLayerPanelShells
+        syncLayerPanelShells: syncLayerPanelShells,
+
+        /** Phase 15：開啟原生 EditPinDialog 並於背景擷取可編輯欄位 */
+        openNativePinEdit: openNativePinEdit,
+
+        /** Phase 15：將原生 EditPinDialog 修改結果寫回背景氣泡窗並自動儲存 */
+        saveNativePinEdit: saveNativePinEdit,
+
+        /** Phase 15：取消原生編輯並退出背景氣泡窗編輯模式 */
+        cancelNativePinEdit: cancelNativePinEdit,
+
+        /** Phase 15：刪除目前選取的地點圖釘 */
+        deleteSelectedPin: deleteSelectedPin,
+
+        /** Phase 15：逃生門 —— 切換回原網頁氣泡窗編輯模式（相片/樣式） */
+        fallbackToWebPinEdit: fallbackToWebPinEdit,
+
+        /** Phase 16：強制歸零視窗與地圖祖先鏈捲動偏移，避免背景聚焦造成地圖飄移卡死 */
+        resetMapViewportScrollLock: resetMapViewportScrollLock,
+
+        /** Phase 17：穿透外層 Wrapper 解析並點擊真正內層 Closure 按鈕 */
+        resolveClickableButton: resolveClickableButton,
+        clickInfoWindowControl: clickInfoWindowControl
     };
 
     /**
@@ -3390,6 +4821,9 @@
 
         // Phase 11：包裝 window.open 以攔截導航彈窗並轉交 Android 原生開啟
         installWindowOpenInterceptor();
+
+        // Phase 16：攔截背景氣泡窗內的 focus() 與 scrollIntoView()，杜絕地圖自動亂移動
+        installInfoWindowFocusScrollGuard();
 
         // Capture 階段攔截點擊，確保在 Closure Library 處理前可攔截並進行 DOM 探測
         document.addEventListener('click', handleDocumentInspectClick, true);

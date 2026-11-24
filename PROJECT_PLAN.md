@@ -3,7 +3,13 @@
 > **給 AI 助手的特別指令 (AI Agent Instructions)**：
 > 1. 每次收到開發任務時，請**務必先完整閱讀本檔案 (`PROJECT_PLAN.md`)**，了解整體架構、技術限制與目前進度。
 > 2. 本專案採用分階段迭代開發。當你完成當前階段的實作後，請**務必更新本檔案底部的「開發進度追蹤」與「AI 交接紀錄 (Handover Log)」**，記錄你新增/修改的檔案路徑、實際採用的 DOM Selector 以及需要注意的事項，方便下一個對話的 AI 無縫接手。
-> 3. **禁止自動執行編譯 (Do NOT execute build)**：完成程式碼修改後，**請勿執行 `build.bat` 或 `gradlew` 編譯指令**，使用者會自行手動執行編譯。
+> 3. **強制自動自測關卡 & 禁止打包 APK（Self-Test Gate, Do NOT build APK）**：
+>    - 完成程式碼修改後，**請勿執行打包 APK 指令**（例如 `build.bat`、`build.bat debug`、`build.bat release`、`build.bat check`、`gradlew assembleDebug`），以免自動跳版號或覆蓋使用者的 APK；打包 APK 一律由使用者自行執行。
+>    - **但必須在回報完成前，親自執行並 100% 通過以下三道自動自測關卡**（皆不打包 APK、不進版）：
+>      1. `node --check app/src/main/assets/inject_script.js`（JS 語法零錯誤）
+>      2. `node scripts/test_inject_dom.mjs`（真實載入執行 `inject_script.js` 與模擬 Google 我的地圖 DOM 行為測試，確認所有案例全數 PASS；每次新增或修復前端/氣泡窗/抽屜/座標功能時，必須同步補上對應回歸測試案例）
+>      3. `cmd /c build.bat test --no-explorer`（驗證全部 Kotlin 編譯零錯誤與全部 JUnit 單元測試通過；`build.bat test` 不會打包 APK 也不會進版）
+>    - 只有三道自測全數 PASS 後，才可以將該階段勾選 `[x]` 並填寫交接紀錄。
 
 ---
 
@@ -200,6 +206,43 @@ MyGMap_guiter/
        - Google 我的地圖為了桌面拖曳排序會在 `#featurelist-pane` 內部設定 `touch-action: none`、固定像素高度與 `overflow: hidden`。在 `body.mygmap-mobile-mode.mygmap-drawer-open` 下強制 `[data-mygmap-role="layer-panel"]`、`#featurelist-pane` 及其子清單容器採用 `touch-action: pan-y !important;`、`overflow-y: auto !important;`、`overscroll-behavior: contain !important;`、`-webkit-overflow-scrolling: touch !important;` 與 `pointer-events: auto !important;`，加上 `padding-bottom: 84px !important;` 避免底部內容被右下方 FAB 遮擋。
        - 同步修正對 `#featurelist-pane [role="button"]` 無差別硬套 `min-width: 44px; min-height: 44px` 可能擠壓緊湊核取方塊/折疊圖示的問題，確保圖層核取方塊 (`[role="checkbox"]`)、樣式圖示、新增圖層與選單都能輕鬆點擊操作。
        - 確認展開抽屜後在點擊/操作 `.goog-menu` / `[role="dialog"]` / 圖層面板內部項目時，絕不會誤觸發收合抽屜或關閉圖釘邏輯。
+- [x] **Phase 15：以原生 Material 3「✏️ 編輯地點」對話框 (`EditPinDialog`) 取代網頁飄移編輯氣泡窗，實作背景無縫回寫與儲存**
+  - **問題痛點與架構改造重點**：
+    1. **徹底告別網頁原版編輯氣泡窗飄移與跑版 (`assets/inject_style.css` & `assets/inject_script.js`)**：
+       - Google Maps 桌面版在輸入框聚焦或手機鍵盤彈起 (`adjustResize`) 時，會不斷用 inline `transform` 重新定位 `.gm-style-iw-c`，導致網頁編輯氣泡窗一直飄離視窗、介面醜陋且無法輸入。
+       - **對策**：新增 `body.mygmap-native-pin-editing` 狀態，於原生編輯期間維持網頁氣泡窗 `opacity: 0 !important; pointer-events: none !important;`（保留 DOM 可讀寫而不 `display: none`），徹底杜絕網頁編輯窗閃現或亂飄；僅於使用者點選逃生門「改用原網頁編輯」或切換「原始桌面排版」時才顯示原網頁編輯窗。
+    2. **JS 層編輯欄位擷取、背景回寫儲存、取消與刪除 API (`assets/inject_script.js` & `webview/WebViewInjector.kt`)**：
+       - 在 `inject_script.js` 新增並於 `window.MyGMapHelper` 公開 `openNativePinEdit()`、`saveNativePinEdit(payloadJson)`、`cancelNativePinEdit()`、`deleteSelectedPin()`、`fallbackToWebPinEdit()`，透過既有的 `setEditableElementValue`（派發完整 Closure `input`/`change`/`keyup`/`blur` 事件）背景回寫並自動點擊 `#map-infowindow-done-editing-button` 雲端儲存，儲存後立即刷新 `SelectedPinBottomCard`。
+    3. **實作原生 Material 3 `EditPinDialog` (`ui/EditPinDialog.kt` & `ui/MyMapScreen.kt`)**：
+       - 視覺風格完全對齊 `SelectedPinBottomCard` 與 `QuickPinDialog`（圓角 `20.dp`、清爽白色卡片、Google 藍標題列、Material 3 `OutlinedTextField`、原生固定置中絕不飄移且支援流暢垂直捲動與鍵盤避讓）。
+       - 支援編輯「📌 地點名稱（標題）」、「📝 說明 / 備註」及動態自訂屬性欄位，並提供「🗑️ 刪除（含二次確認對話框）」與「🌐 改用原網頁編輯（相片/樣式）」保底逃生門。
+- [x] **Phase 16：徹底根治 POI 點選閃跳、編輯標題未帶入與說明儲存失效、以及編輯儲存後地圖飄移卡死三大問題**
+  - **三大問題根因與修復重點**：
+    1. **修復點選 POI 時先閃跳原網頁氣泡窗才出原生 UI (`assets/inject_style.css` & `assets/inject_script.js`)**：
+       - 原本在未選取 POI 時會移除 `body.mygmap-pin-view-hidden`，導致點下圖釘後的 `80ms~350ms` 空窗期，原網頁白色氣泡窗會先閃現並觸發畫面跳動。
+       - **對策**：在 `body.mygmap-mobile-mode` 下**預設常駐隱藏** `.gm-style-iw` / `#map-infowindow-container`（`opacity: 0 !important; pointer-events: none !important;`），僅當明確處於 `body.mygmap-pin-editing`（原網頁編輯逃生門）或 `body.mygmap-addtomap-visible`（搜尋綠釘含 `#addtomap-button`）時才顯示網頁氣泡窗；同時將點選後的偵測改用 `requestAnimationFrame` + `25ms` + `90ms` 極速偵測，讓 `SelectedPinBottomCard` 零閃爍流暢出現。
+    2. **修復編輯時標題未帶入，且編輯「說明」儲存後再開看不到 (`assets/inject_script.js`)**：
+       - 原本 `findInfoWindowTitleField()` 備援選擇器只寫 `input[type="text"]`，會漏掉沒有顯式 `type="text"` 屬性的 `<input>`，結果誤把空白的 `<textarea>` 抓成標題、`descField` 沒抓到真正說明框；加上寫入時未派發完整的 `InputEvent` / `keydown` / `keyup` 事件讓 Google Closure `InputHandler` 接收變更。
+       - **對策**：在氣泡窗編輯模式下改用 `input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="file"])` 搭配 `textarea`、`[contenteditable="true"]`，優先匹配真正 `isNodeCurrentlyEditable` 的標題與說明欄位，並在 `openNativePinEdit()` 預先保留檢視模式下的 `preViewTitle` 作為標題防空保底；在 `setEditableElementValue()` 派發完整 `InputEvent('input')` + `Event('change')` + `keydown`/`keyup`（並確保 `textarea` / `contenteditable` 均正確寫入），按下 `#map-infowindow-done-editing-button` 後確認退出編輯模式並完整重新擷取最新標題與說明。
+    3. **徹底根治編輯儲存後地圖位置飄走甚至拉不回來的問題 (`assets/inject_script.js` & `assets/inject_style.css`)**：
+       - 原本 `setEditableElementValue()` 呼叫了 `el.focus()`（**未帶 `{ preventScroll: true }`**）與 `simulateClick(el)`，在背景聚焦隱藏的 `.gm-style-iw-c` 輸入框時，Chromium WebView 會強制捲動 `overflow: hidden` 的地圖父容器 (`scrollLeft` / `scrollTop`)，導致整個地圖視埠偏移且手指無法拉回！
+       - **對策**：`setEditableElementValue()` 全面改用 `el.focus({ preventScroll: true })` 並移除對 `<input>`/`<textarea>` 多餘的 `simulateClick(el)`；新增 `resetMapViewportScrollLock()` 於 `openNativePinEdit()`、`saveNativePinEdit()`、`cancelNativePinEdit()` 與 `deleteSelectedPin()` 執行前後強制將 `window.scrollTo(0, 0)` 與 `#map-canvas` / `.gm-style` 整條祖先鏈的 `scrollLeft = 0; scrollTop = 0;` 歸零（並在 `inject_style.css` 鎖定 `body.mygmap-mobile-mode` 根層級 `overflow: hidden !important` 防止捲動偏移），確保地圖位置完全不飄移、永遠拉得回來。
+    4. **建立永久 JS/DOM 真實執行回歸測試套件 (`scripts/test_inject_dom.mjs`) 並啟用三道自動自測關卡**：
+       - 建立零外部商業相依、純開源 Node.js 可直接執行的 `scripts/test_inject_dom.mjs`，建立模擬 Google 我的地圖 DOM 環境（含 360px 手機視埠、無 `type="text"` 屬性之 `<input>`、`<textarea>`、`#map-infowindow-container`、`#featurelist-pane`、`.gm-style`、`AndroidBridge` Spy 與 `focus` 捲動監控），真實執行 `inject_script.js` 驗證：POI 編輯標題自動帶入、說明回寫與儲存、`preventScroll: true` 與捲動歸零、圖層抽屜遮罩不重疊且不誤藏地圖，以及 `!3d!4d` 座標解析。
+       - 自本階段起，所有 AI 任務完成前必須通過 `node --check`、`node scripts/test_inject_dom.mjs` 與 `cmd /c build.bat test --no-explorer`（嚴禁打包 APK）。
+- [x] **Phase 17：根治「儲存按鈕為外層 Wrapper 導致未實際觸發儲存、背景卡死編輯模式、說明無法寫入與地圖拉不開一直回彈」問題**
+  - **單一核心根因與修復重點**：
+    1. **發現實機關鍵根因：`#map-infowindow-done-editing-button` / `#map-infowindow-cancel-editing-button` 是外層 Wrapper，真正的 Closure 按鈕在內層子節點！**
+       - 實機截圖與行為交叉驗證證實：Google 我的地圖的「儲存」與「取消」實際可點擊按鈕 (`<div role="button">` / `<button>` / `.jfk-button`) 位於 `#map-infowindow-done-editing-button` 外層容器的**子節點**。
+       - DOM 事件只會向上冒泡（child -> parent），不會向下傳遞（parent -> child）！因此原本對外層 `#map-infowindow-done-editing-button` 派發點擊**根本沒有按到真正的「儲存」按鈕**，導致：(a) 編輯後的「說明」完全沒寫入 Google；(b) 背景氣泡窗永久卡死在編輯模式 (`opacity: 0` 看不到)；(c) 因卡在編輯模式，點擊地圖空白處無法取消焦點，且 Google Maps 編輯氣泡窗的自動居中 (`autoPan`) 會在你拖曳地圖時一直把畫面強制拉回該 POI 附近！
+    2. **實作 `resolveClickableButton(node)` 與內外層雙保險點擊 (`assets/inject_script.js`)**：
+       - 對 `findInfoWindowSaveButton()`、`findInfoWindowCancelButton()`、`findInfoWindowEditButton()`、`findInfoWindowDeleteButton()` 新增內層按鈕解析：若目標節點內部包含 `button, [role="button"], .jfk-button, .goog-button, .goog-inline-block` 子元素，**優先點擊最內層可點擊按鈕**（事件會自然向上冒泡至外層 Wrapper，雙邊都能收到！），必要時補點外層與 `.click()`。
+    3. **禁止逾時假性成功 & 確認真正退出編輯模式 (`assets/inject_script.js`)**：
+       - 在 `saveNativePinEdit()` 中：當 `nextDesc` 非空時，`hasReadyEditableFields()` 必須等到 `descField` 也已就緒才開始寫入；寫入後驗證 `readEditableFieldValue(descField)` 確實為新值再點擊儲存。
+       - **嚴禁在 `stillEditing === true`（逾時）時回報 `ok: true`！** 只有確認 `!stillEditing`（背景氣泡窗確實退出編輯模式並回到檢視模式）才回報 `✅ 已儲存地點變更`，徹底杜絕氣泡窗卡在編輯模式導致無法點空白處取消與地圖一直回彈！
+       - 若逾時仍卡在編輯模式，回報 `ok: false` 明確錯誤提示，並在安全處置下避免地圖被鎖死回彈。
+    4. **建立/強化 `scripts/test_inject_dom.mjs` 並強制通過三道自測關卡**：
+       - 建立（若尚未存在）或強化 `scripts/test_inject_dom.mjs`，加入「巢狀 Wrapper 儲存按鈕（僅點擊內層 `[role="button"]` 才觸發儲存與退出編輯模式）」回歸測試，並親自執行通過 `node --check`、`node scripts/test_inject_dom.mjs` 與 `cmd /c build.bat test --no-explorer`（嚴禁打包 APK）。
 
 ---
 
@@ -628,8 +671,81 @@ MyGMap_guiter/
   - 已透過 node 獨立驗證腳本測試所有 CSS 與 JS 斷言條件均為 true。
   - 依指示**未執行 `build.bat` 或 `gradlew` 編譯指令**，由使用者自行手動編譯與實機驗證。
 
+### Phase 15 交接紀錄
+- **狀態**：已完成 (`[x]`)
+- **已建立/修改檔案**：
+  - `app/src/main/assets/inject_style.css`：
+    - 新增 `body.mygmap-mobile-mode.mygmap-native-pin-editing`（及複合高優先權 `body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing`）規則，對 `.gm-style-iw-a`、`.gm-style-iw-t`、`.gm-style-iw`、`.gm-style-iw-c`、`.gm-style-iw-d`、`.gm-style-iw-tc`、`#map-infowindow-container` 維持 `opacity: 0 !important; pointer-events: none !important;`（嚴格不使用 `display: none`，確保 JS 可在背景讀寫欄位與觸發儲存/取消），徹底防止網頁原版編輯氣泡窗閃現或亂飄。
+  - `app/src/main/assets/inject_script.js`：
+    - 於 `helperState` 新增 `nativePinEditing: false`，並於 `applyBodyClasses()` 與 `applyInfoWindowBodyClasses()` 同步鎖定 `body.mygmap-native-pin-editing`。
+    - 新增背景編輯欄位擷取與按鈕定位函式（`findInfoWindowCancelButton`、`findInfoWindowDeleteButton`、`readEditableFieldValue`、`extractAttrFieldLabel`、`collectNativePinEditFormData`），並於 `window.MyGMapHelper` 公開以下五個 Phase 15 API：
+      1. `openNativePinEdit()`：鎖定隱藏網頁氣泡窗、自動點擊 `#map-infowindow-edit-button`（並於點擊前預先紀錄檢視模式下的 `canDelete`/`canEditPhoto`/`canEditStyle`），輪詢（每 `90ms`、最多 `900ms`）擷取標題、說明與自訂 `[id^="map-infowindow-attr-"][id$="-value"]` 欄位，透過 `AndroidBridge.onPinEditFormReady(json)` 回傳（逾時提供優雅降級或唯讀提示）。
+      2. `saveNativePinEdit(payloadJson)`：必要時自動進入背景編輯模式，透過既有 `setEditableElementValue` 派發完整 Closure 事件依序回寫標題、說明與 `extraFields`，延遲 `180ms` 後自動模擬點擊 `#map-infowindow-done-editing-button` 儲存，解除 `nativePinEditing`、刷新 `SelectedPinBottomCard` 並回報 `AndroidBridge.onPinEditResult(json)`。
+      3. `cancelNativePinEdit()`：解除 `nativePinEditing` 並點擊 `#map-infowindow-cancel-editing-button` 退出背景編輯回到檢視狀態。
+      4. `deleteSelectedPin()`：點擊 `#map-infowindow-delete-button`（若因處於編輯模式暫時隱藏則先取消返回檢視再刪除，並自動確認刪除對話框），完成後刷新卡片關閉。
+      5. `fallbackToWebPinEdit()`：逃生門 —— 解除 `mygmap-native-pin-editing` 並置中顯示原網頁氣泡窗編輯介面（供上傳相片或修改圖釘樣式使用）。
+  - `app/src/main/java/com/guiterevent/mygmap/webview/WebViewInjector.kt`：
+    - 新增 `openNativePinEdit`、`saveNativePinEdit`、`cancelNativePinEdit`、`deleteSelectedPin`、`fallbackToWebPinEdit` 五個包裝方法。
+  - `app/src/main/java/com/guiterevent/mygmap/webview/MyMapJsBridge.kt`：
+    - 新增 `PinEditableField`、`PinEditFormState`、`PinEditResult` 資料類別與 `parsePinEditFormState` / `parsePinEditResult`（含純 JVM 單元測試 Regex Fallback 解析）。
+    - 新增 `@JavascriptInterface fun onPinEditFormReady(formJson: String)`、`@JavascriptInterface fun onPinEditResult(resultJson: String)` 與對應主執行緒回呼。
+  - `app/src/main/java/com/guiterevent/mygmap/ui/EditPinDialog.kt`（新建）：
+    - 實作 Material 3 原生固定置中「✏️ 編輯地點」對話框（圓角 `20.dp`、Google 藍標題徽章、支援 `verticalScroll` 鍵盤避讓），包含「📌 地點名稱（標題）」、「📝 說明 / 備註」、動態自訂圖層欄位區、唯讀座標與雲端同步提示膠囊、「🗑️ 刪除地點（附二次確認對話框）」、「🌐 改用原網頁編輯（相片/樣式）」逃生門，以及底部「取消」與「💾 儲存（含 `CircularProgressIndicator` 防連點）」按鈕。
+  - `app/src/main/java/com/guiterevent/mygmap/ui/MyMapScreen.kt`：
+    - 將 `SelectedPinBottomCard` 的 `onEdit` 改為呼叫 `WebViewInjector.openNativePinEdit(wv)`。
+    - 串接 `onPinEditFormReadyCallback`（開啟 `EditPinDialog`）與 `onPinEditResultCallback`（關閉對話框並顯示 `Toast` 提示），並在 `EditPinDialog` 開啟時自動隱藏 `SelectedPinBottomCard`。
+  - `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`：
+    - 新增 `parsePinEditFormState` 與 `parsePinEditResult` 單元測試（驗證標題、備註、`extraFields`、`canDelete` 與失敗狀態），並新增資產斷言檢查 `mygmap-native-pin-editing` 與五個 Phase 15 JS API。
+- **驗證結果與注意事項**：
+  - 已執行 `node --check app/src/main/assets/inject_script.js` 檢查 JS 語法完全正確（exit code 0）。
+  - 依指示**未執行 `build.bat` 或 `gradlew` 編譯指令**，由使用者自行手動編譯與實機驗證。
 
 
 
 
 
+
+### Phase 16 交接紀錄
+- **狀態**：已完成 (`[x]`)
+- **已建立/修改檔案**：
+  - `app/src/main/assets/inject_style.css`：
+    - 將 `body.mygmap-mobile-mode` 下的原網頁氣泡窗隱藏規則升級為**預設常駐生效**：當 `body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible)` 時，`.gm-style-iw-a`、`.gm-style-iw-t`、`.gm-style-iw`、`.gm-style-iw-c`、`.gm-style-iw-tc`、`#map-infowindow-container` 一律保持 `opacity: 0 !important; pointer-events: none !important;`（絕不使用 `display: none`），從點選圖釘的第 `0ms` 起徹底消除白色氣泡窗閃現跳動；同時保留 `body.mygmap-mobile-mode.mygmap-addtomap-visible` 規則讓搜尋綠釘（含 `#addtomap-button`）正常可見。
+    - 於 `html.mygmap-mobile-mode, body.mygmap-mobile-mode` 加入 `overflow: hidden !important;`，防止背景焦點造成根視埠捲動偏移（並維持 CSS Bypass 逃生門）。
+    - 同步更新 `#map-infowindow-container` 輸入框樣式選擇器以涵蓋無顯式 `type="text"` 屬性之 `<input>`。
+  - `app/src/main/assets/inject_script.js`：
+    - **消除 POI 點選閃跳**：於 `applyInfoWindowBodyClasses()` 依 `hasVisibleAddToMapButton(container)` 精準切換 `body.mygmap-addtomap-visible`；於 `applyBodyClasses()` 同步維護 `document.documentElement` 的 `mygmap-mobile-mode` class；優化 `scheduleSelectedPinStateChecks()` 改採 `requestAnimationFrame` + `25ms` + `90ms` + `220ms` + `500ms` 極速偵測節奏。
+    - **修復標題未帶入與「說明」儲存不生效**：
+      - 定義統一氣泡窗編輯選擇器 `INFOWINDOW_TEXT_INPUT_SELECTOR`（`input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="file"])`）與 `INFOWINDOW_EDITABLE_SELECTOR`，修正 `resolveEditableNode()`、`isInfoWindowInEditMode()`、`findInfoWindowTitleField()` 與 `findInfoWindowDescField(titleNode)`。編輯模式下嚴格優先從 `#map-infowindow-container` / `.gm-style-iw` 內真正可編輯 (`isNodeCurrentlyEditable`) 的節點定位標題（已知標題 ID -> 第一個可編輯 `<input>` -> 第一個可編輯 `map-infowindow-attr-*-value`）與說明（已知說明 ID -> 第一個非標題 `<textarea>` / `[contenteditable="true"]` -> 第二個可編輯欄位），杜絕漏抓無 `type="text"` 的 `<input>` 而誤抓空白 `<textarea>`。
+      - 在 `openNativePinEdit()` 點擊編輯按鈕前先以 `extractSelectedPinUiState()` 記住 `preViewTitle`，若編輯表單讀到空標題時自動以 `preViewTitle` 補齊。
+      - 強化 `setEditableElementValue()`：全面改用 `focusWithoutScroll(el)`（`el.focus({ preventScroll: true })`）並移除多餘的 `simulateClick(el)`，派發完整 Closure `InputHandler` 事件序列（`KeyboardEvent('keydown')` -> `InputEvent('input', { inputType, data })` -> `Event('change')` -> `KeyboardEvent('keyup')` -> `Event('blur')`），並妥善處理 `[contenteditable="true"]` 範圍選取與寫入。
+      - 強化 `saveNativePinEdit()`：將點擊 `#map-infowindow-done-editing-button` 延遲拉長至 `240ms`；若 `250ms` 後仍處於編輯模式自動補一次 `saveBtn.click()`；於 `extractSelectedPinUiState()` 確保自訂說明欄位 (`map-infowindow-attr-說明-value` 等) 直接保留顯示不被 `isBoilerplatePinLine` 誤濾。
+    - **根治編輯儲存後地圖飄移與卡死拉不回來**：
+      - `simulateClick()` 與 `setInputValueAndNotify()` 同步改用 `focusWithoutScroll(el)`（`el.focus({ preventScroll: true })`）。
+      - 新增並於 `window.MyGMapHelper` 公開 `resetMapViewportScrollLock()` 與 `scheduleMapViewportScrollUnlock()`：強制歸零 `window.scrollTo(0, 0)`、`documentElement`/`body` 以及從 `#map-canvas` / `#lyra-canvas` / `.gm-style` 往上整條祖先鏈的 `scrollLeft` / `scrollTop` 並解除背景焦點。
+      - 於 `openNativePinEdit()`、`saveNativePinEdit()`、`cancelNativePinEdit()`、`deleteSelectedPin()` 執行期間及結束後（`requestAnimationFrame`、`100ms`、`350ms`）自動歸零捲動鎖定，並於退出編輯後派發 `window.dispatchEvent(new Event('resize'))` 確保 Google Maps 手勢與圖磚座標 100% 恢復正常。
+  - `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`：
+    - 擴充 Phase 16 斷言驗證 `inject_style.css` 的 `mygmap-addtomap-visible` 預設隱藏與 `overflow: hidden !important;` 規則，以及 `inject_script.js` 的 `preventScroll: true`、`resetMapViewportScrollLock` 與支援無 `type="text"` 屬性 `<input>` 的編輯選擇器。
+- **驗證結果與注意事項**：
+  - 已執行 `node --check app/src/main/assets/inject_script.js` 驗證 JS 語法完全正確（exit code 0）。
+  - 依指示**未執行 `build.bat` 或 `gradlew` 編譯指令**，由使用者自行手動編譯與實機驗證。
+
+### Phase 17 交接紀錄
+- **狀態**：已完成 (`[x]`)
+- **已建立/修改檔案**：
+  - `app/src/main/assets/inject_script.js`：
+    - 新增 `resolveClickableButton(rawNode)`（依序優先查詢可見之 `button`、`[role="button"]`、`.jfk-button`、`.goog-button`、`.goog-inline-block` 子節點並挑選最內層可點擊按鈕，事件自然由內層冒泡至外層 Wrapper）與 `clickInfoWindowControl(rawNode, options)`（對最內層按鈕派發完整 `simulateClick` 序列，絕不呼叫無參數 `focus()`，必要時支援補發 `.click()` 與外層 Wrapper 點擊），並掛載於 `window.MyGMapHelper`。
+    - 將 `findInfoWindowSaveButton()`、`findInfoWindowCancelButton()`、`findInfoWindowEditButton()`、`findInfoWindowDeleteButton()` 的點擊流程（涵蓋 `saveNativePinEdit`、`cancelNativePinEdit`、`deleteSelectedPin`、`addGpsPinToMap`、`fallbackToWebPinEdit`、`triggerInfoWindowEdit`）全面改由 `clickInfoWindowControl()` 執行。
+    - 強化 `saveNativePinEdit()`：
+      - 修正 `hasReadyEditableFields()`：當 `nextDesc.trim().length > 0` 時，必須等到 `descField && isNodeCurrentlyEditable(descField)` 就緒才進入 `performWriteAndSave()`，不再因 `titleField` 先就緒而提早寫入。
+      - 寫入 `descField` 後即時比對 `readEditableFieldValue(descField) === nextDesc`，若因 Google Closure `LabelInput` 狀態未寫入，立即補做直接寫入並重派完整 `focus`/`focusin`/`keydown`/`keypress`/`input`/`change`/`keyup`/`focusout`/`blur` 事件。
+      - 延遲 `260ms` 後透過 `clickInfoWindowControl(saveBtn)` 點擊內層儲存按鈕，並以每 `90ms` 輪詢最長 `2000ms` 驗證 `!stillEditing`：`300ms` 階段對內層按鈕與外層 Wrapper 補發 `.click()` + `simulateClick()`、`750ms` 階段遍歷 `saveBtn` 內所有 `[role="button"], button, .jfk-button` 與文字為「儲存 / Save / 完成 / Done」之可見子節點逐一觸發。
+      - **嚴格杜絕逾時假性成功**：僅於確認 `!stillEditing`（確實退出編輯模式回到檢視模式）時，解除 `nativePinEditing`、清除 `body.mygmap-native-pin-editing` 與 `body.mygmap-pin-editing`、呼叫 `blurActiveWebElement()` / `resetMapViewportScrollLock(true)` / `scheduleMapViewportScrollUnlock()`、刷新 `reportSelectedPinStateIfChanged(true)` 並回報 `{ ok: true, action: 'save', message: '✅ 已儲存地點變更' }`；若逾時 `2000ms` 仍卡在編輯模式，先呼叫 `cancelNativePinEdit()` 防止地圖鎖死回彈，並嚴格回報 `{ ok: false, action: 'save', message: '⚠️ 背景儲存未生效，已還原狀態，請點「改用原網頁編輯」試試' }`。
+    - 強化 `cancelNativePinEdit()`：於首次點擊取消按鈕後立即同步檢查 `!isInfoWindowInEditMode`，若已退出編輯模式即刻解除 `nativePinEditing` 與 body class 並刷新卡片。
+  - `scripts/test_inject_dom.mjs`（新建）：
+    - 純開源 Node.js（零外部相依）真實載入並執行 `app/src/main/assets/inject_script.js`，完整涵蓋 7 組真實 DOM 行為回歸測試（1. 巢狀 Wrapper 儲存按鈕穿透點擊；2. 儲存失敗不假報成功與不鎖死 `nativePinEditing`；3. 無 `type="text"` `<input>` 標題自動帶入與空 `<textarea>` 說明寫入；4. 禁止無 `preventScroll: true` 聚焦與 `resetMapViewportScrollLock` 捲動歸零；5. 一般 POI vs 搜尋綠釘 `mygmap-addtomap-visible` 零閃跳狀態；6. 360px 窄螢幕圖層抽屜地圖保護與 backdrop `left` 動態寬度；7. `!3d!4d` 高精準座標優先序）。
+  - `app/src/test/java/com/guiterevent/mygmap/JsBridgeAndAssetsTest.kt`：
+    - 新增 Phase 17 資產斷言，驗證 `inject_script.js` 包含 `resolveClickableButton` 與 `clickInfoWindowControl`。
+- **驗證結果與注意事項（三道自動自測關卡全數 PASS，未打包 APK、未進版）**：
+  1. `node --check app/src/main/assets/inject_script.js`：**PASS**（exit code 0，JS 語法零錯誤）。
+  2. `node scripts/test_inject_dom.mjs`：**PASS**（**7/7 passed, 0 failed**）。
+  3. `cmd /c .\build.bat test --no-explorer`（`gradlew testDebugUnitTest`，使用純開源 Eclipse Adoptium Temurin 21.0.13）：**PASS**（`BUILD SUCCESSFUL`，版本維持 `v1.0.11 (versionCode=12)`，未執行 APK 打包）。

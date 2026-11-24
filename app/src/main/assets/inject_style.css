@@ -10,8 +10,11 @@
 
 /* ----------------------------------------------------------------------------
  * 1. 全域觸控與地圖畫布滿版化 (僅限 body.mygmap-mobile-mode)
+ *    Phase 16：鎖定 html / body overflow: hidden !important 禁止外層根視埠被隱形焦點捲動偏移
  * ---------------------------------------------------------------------------- */
+html.mygmap-mobile-mode,
 body.mygmap-mobile-mode {
+    overflow: hidden !important;
     overscroll-behavior: none !important;
     -webkit-tap-highlight-color: rgba(26, 115, 232, 0.18);
     touch-action: manipulation;
@@ -392,9 +395,9 @@ body.mygmap-mobile-mode .gm-style-iw a[href*="maps"]:not([href*="/maps/dir"]) {
     text-decoration: none !important;
 }
 
-/* 編輯模式下輸入框保持舒適高度與 100% 寬度 */
+/* 編輯模式下輸入框保持舒適高度與 100% 寬度（支援無顯式 type="text" 屬性之 <input>） */
 body.mygmap-mobile-mode [id^="map-infowindow-attr-"][id$="-value"],
-body.mygmap-mobile-mode #map-infowindow-container input[type="text"],
+body.mygmap-mobile-mode #map-infowindow-container input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="file"]),
 body.mygmap-mobile-mode #map-infowindow-container textarea,
 body.mygmap-mobile-mode #map-infowindow-container [contenteditable="true"] {
     min-height: 38px !important;
@@ -459,8 +462,15 @@ body.mygmap-mobile-mode .gm-style-iw button.gm-ui-hover-effect {
     border-radius: 50% !important;
 }
 
-/* Phase 12：檢視模式下隱藏網頁原氣泡窗（僅顯示原生 SelectedPinBottomCard），
- * 刻意不使用 display:none / visibility:hidden，讓 JS 仍可正常讀取 DOM 與點擊編輯按鈕 */
+/* Phase 12 & Phase 16：手機模式下預設常駐隱藏原網頁白色氣泡窗（僅於原網頁編輯逃生門
+ * mygmap-pin-editing 或搜尋結果綠釘 mygmap-addtomap-visible 時顯示），從點擊圖釘第 0ms 起
+ * 徹底杜絕原網頁氣泡窗先閃現跳動再被隱藏的問題；嚴禁使用 display:none，確保 JS 可正常讀寫 DOM */
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw-a,
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw-t,
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw,
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw-c,
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw-tc,
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) #map-infowindow-container,
 body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw-a,
 body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw-t,
 body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw,
@@ -469,6 +479,51 @@ body.mygmap-mobile-mode.mygmap-pin-view-hidden .gm-style-iw-tc,
 body.mygmap-mobile-mode.mygmap-pin-view-hidden #map-infowindow-container {
     opacity: 0 !important;
     pointer-events: none !important;
+}
+
+/* Phase 16 強化：將隱藏狀態下的 .gm-style-iw-c、.gm-style-iw-d 與 #map-infowindow-container 鎖定為固定 8x8px
+ * （仍大於 4px 讓 isInfoWindowVisible 與 getClientRects 正常），並在原生背景編輯期間將收合抽屜寬度歸零，
+ * 避免 Google My Maps 依據 340px 左側欄與大氣泡窗寬度觸發 autoPan 把背景地圖往左推！ */
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw-c,
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw-d,
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) #map-infowindow-container,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-c,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-d,
+body.mygmap-mobile-mode.mygmap-native-pin-editing #map-infowindow-container {
+    width: 8px !important;
+    min-width: 8px !important;
+    max-width: 8px !important;
+    height: 8px !important;
+    min-height: 8px !important;
+    max-height: 8px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    overflow: hidden !important;
+}
+
+body.mygmap-mobile-mode.mygmap-drawer-closed.mygmap-native-pin-editing [data-mygmap-role="layer-panel"],
+body.mygmap-mobile-mode.mygmap-drawer-closed.mygmap-native-pin-editing #featurelist-pane {
+    width: 0px !important;
+    min-width: 0px !important;
+    max-width: 0px !important;
+}
+
+body.mygmap-mobile-mode:not(.mygmap-pin-editing):not(.mygmap-addtomap-visible) .gm-style-iw-tc,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-tc {
+    display: none !important;
+}
+
+/* Phase 16：搜尋結果綠釘氣泡窗（含 #addtomap-button）保持正常可見與可點擊 */
+body.mygmap-mobile-mode.mygmap-addtomap-visible:not(.mygmap-native-pin-editing) .gm-style-iw-a,
+body.mygmap-mobile-mode.mygmap-addtomap-visible:not(.mygmap-native-pin-editing) .gm-style-iw-t,
+body.mygmap-mobile-mode.mygmap-addtomap-visible:not(.mygmap-native-pin-editing) .gm-style-iw,
+body.mygmap-mobile-mode.mygmap-addtomap-visible:not(.mygmap-native-pin-editing) .gm-style-iw-c,
+body.mygmap-mobile-mode.mygmap-addtomap-visible:not(.mygmap-native-pin-editing) .gm-style-iw-tc,
+body.mygmap-mobile-mode.mygmap-addtomap-visible:not(.mygmap-native-pin-editing) #map-infowindow-container {
+    opacity: 1 !important;
+    pointer-events: auto !important;
 }
 
 /* Phase 12：編輯模式下確保氣泡窗表單寬度適配手機並完整顯示於視窗中央，不被推到螢幕右外側 */
@@ -495,6 +550,26 @@ body.mygmap-mobile-mode.mygmap-pin-editing #map-infowindow-container {
     overflow-x: hidden !important;
     opacity: 1 !important;
     pointer-events: auto !important;
+}
+
+/* Phase 15：原生 Material 3 EditPinDialog 編輯期間，鎖定隱藏網頁原版編輯氣泡窗，
+ * 優先權嚴格高於 mygmap-pin-editing，且嚴禁使用 display: none，確保 JS 可於背景讀寫欄位並觸發儲存/取消 */
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-a,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-t,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-c,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-d,
+body.mygmap-mobile-mode.mygmap-native-pin-editing .gm-style-iw-tc,
+body.mygmap-mobile-mode.mygmap-native-pin-editing #map-infowindow-container,
+body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing .gm-style-iw-a,
+body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing .gm-style-iw-t,
+body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing .gm-style-iw,
+body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing .gm-style-iw-c,
+body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing .gm-style-iw-d,
+body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing .gm-style-iw-tc,
+body.mygmap-mobile-mode.mygmap-pin-editing.mygmap-native-pin-editing #map-infowindow-container {
+    opacity: 0 !important;
+    pointer-events: none !important;
 }
 
 /* ----------------------------------------------------------------------------

@@ -64,6 +64,7 @@ data class GpsPinStatusInfo(
 data class SelectedPinInfo(
     val visible: Boolean = false,
     val title: String = "",
+    val description: String = "",
     val details: String = "",
     val rating: String = "",
     val coordinates: String = "",
@@ -73,6 +74,39 @@ data class SelectedPinInfo(
     val photoUrls: List<String> = emptyList(),
     val placeUrl: String = "",
     val directionsUrl: String = ""
+)
+
+/**
+ * Phase 15：代表圖釘編輯表單中的單一自訂屬性欄位（除名稱與說明外的額外欄位）。
+ */
+data class PinEditableField(
+    val id: String,
+    val label: String,
+    val value: String,
+    val multiline: Boolean = false
+)
+
+/**
+ * Phase 15：由 `inject_script.js` 的 `openNativePinEdit()` 擷取並回傳給原生 `EditPinDialog` 的表單狀態。
+ */
+data class PinEditFormState(
+    val ok: Boolean = false,
+    val title: String = "",
+    val description: String = "",
+    val extraFields: List<PinEditableField> = emptyList(),
+    val canDelete: Boolean = false,
+    val canEditPhoto: Boolean = false,
+    val canEditStyle: Boolean = false,
+    val errorMessage: String = ""
+)
+
+/**
+ * Phase 15：由 `inject_script.js` 的 `saveNativePinEdit()` / `deleteSelectedPin()` 回傳的執行結果。
+ */
+data class PinEditResult(
+    val ok: Boolean = false,
+    val action: String = "save",
+    val message: String = ""
 )
 
 /**
@@ -90,7 +124,9 @@ class MyMapJsBridge(
     private val onActiveToolChangedCallback: (toolName: String) -> Unit = {},
     private val onGpsPinStatusCallback: (status: GpsPinStatusInfo) -> Unit = {},
     private val onExternalNavigationRequestedCallback: (targetUrl: String?, contextJson: String?) -> Unit = { _, _ -> },
-    private val onSelectedPinStateChangedCallback: (SelectedPinInfo) -> Unit = {}
+    private val onSelectedPinStateChangedCallback: (SelectedPinInfo) -> Unit = {},
+    private val onPinEditFormReadyCallback: (PinEditFormState) -> Unit = {},
+    private val onPinEditResultCallback: (PinEditResult) -> Unit = {}
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -231,6 +267,7 @@ class MyMapJsBridge(
                 SelectedPinInfo(
                     visible = true,
                     title = safeOptJsonString(json, jsonStr, "title"),
+                    description = safeOptJsonString(json, jsonStr, "description"),
                     details = safeOptJsonString(json, jsonStr, "details"),
                     rating = safeOptJsonString(json, jsonStr, "rating"),
                     coordinates = safeOptJsonString(json, jsonStr, "coordinates"),
@@ -250,6 +287,7 @@ class MyMapJsBridge(
                 SelectedPinInfo(
                     visible = true,
                     title = extractJsonStringField(jsonStr, "title"),
+                    description = extractJsonStringField(jsonStr, "description"),
                     details = extractJsonStringField(jsonStr, "details"),
                     rating = extractJsonStringField(jsonStr, "rating"),
                     coordinates = extractJsonStringField(jsonStr, "coordinates"),
@@ -261,6 +299,128 @@ class MyMapJsBridge(
                     directionsUrl = extractJsonStringField(jsonStr, "directionsUrl")
                 )
             }
+        }
+
+        /**
+         * Phase 15：將 JS `onPinEditFormReady` 傳回的 JSON 字串解析為 [PinEditFormState]。
+         * 內建對 JVM 單元測試環境 (Stub JSONObject) 的正規表達式備援解析。
+         */
+        fun parsePinEditFormState(jsonStr: String): PinEditFormState {
+            if (jsonStr.isBlank()) {
+                return PinEditFormState(ok = false, errorMessage = "無法讀取編輯表單資料")
+            }
+
+            return try {
+                val json = JSONObject(jsonStr)
+                val ok = (json.has("ok") && json.optBoolean("ok", false)) ||
+                    extractJsonBooleanField(jsonStr, "ok")
+                val extraFields = parseExtraFieldsFromJsonObject(json, jsonStr)
+                PinEditFormState(
+                    ok = ok,
+                    title = safeOptJsonString(json, jsonStr, "title"),
+                    description = safeOptJsonString(json, jsonStr, "description"),
+                    extraFields = extraFields,
+                    canDelete = (json.has("canDelete") && json.optBoolean("canDelete", false)) ||
+                        extractJsonBooleanField(jsonStr, "canDelete"),
+                    canEditPhoto = (json.has("canEditPhoto") && json.optBoolean("canEditPhoto", false)) ||
+                        extractJsonBooleanField(jsonStr, "canEditPhoto"),
+                    canEditStyle = (json.has("canEditStyle") && json.optBoolean("canEditStyle", false)) ||
+                        extractJsonBooleanField(jsonStr, "canEditStyle"),
+                    errorMessage = safeOptJsonString(json, jsonStr, "errorMessage")
+                )
+            } catch (_: Throwable) {
+                PinEditFormState(
+                    ok = extractJsonBooleanField(jsonStr, "ok"),
+                    title = extractJsonStringField(jsonStr, "title"),
+                    description = extractJsonStringField(jsonStr, "description"),
+                    extraFields = extractExtraFieldsFromRawJson(jsonStr),
+                    canDelete = extractJsonBooleanField(jsonStr, "canDelete"),
+                    canEditPhoto = extractJsonBooleanField(jsonStr, "canEditPhoto"),
+                    canEditStyle = extractJsonBooleanField(jsonStr, "canEditStyle"),
+                    errorMessage = extractJsonStringField(jsonStr, "errorMessage")
+                )
+            }
+        }
+
+        /**
+         * Phase 15：將 JS `onPinEditResult` 傳回的 JSON 字串解析為 [PinEditResult]。
+         * 內建對 JVM 單元測試環境 (Stub JSONObject) 的正規表達式備援解析。
+         */
+        fun parsePinEditResult(jsonStr: String): PinEditResult {
+            if (jsonStr.isBlank()) {
+                return PinEditResult(ok = false, action = "save", message = "")
+            }
+
+            return try {
+                val json = JSONObject(jsonStr)
+                PinEditResult(
+                    ok = (json.has("ok") && json.optBoolean("ok", false)) ||
+                        extractJsonBooleanField(jsonStr, "ok"),
+                    action = safeOptJsonString(json, jsonStr, "action").ifBlank { "save" },
+                    message = safeOptJsonString(json, jsonStr, "message")
+                )
+            } catch (_: Throwable) {
+                PinEditResult(
+                    ok = extractJsonBooleanField(jsonStr, "ok"),
+                    action = extractJsonStringField(jsonStr, "action").ifBlank { "save" },
+                    message = extractJsonStringField(jsonStr, "message")
+                )
+            }
+        }
+
+        private fun parseExtraFieldsFromJsonObject(json: JSONObject, rawJson: String): List<PinEditableField> {
+            val arr = if (json.has("extraFields") && !json.isNull("extraFields")) {
+                json.optJSONArray("extraFields")
+            } else {
+                null
+            }
+            if (arr != null && arr.length() > 0) {
+                val list = mutableListOf<PinEditableField>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val id = item.optString("id", "").trim()
+                    val label = item.optString("label", "").trim()
+                    val value = item.optString("value", "")
+                    val multiline = item.optBoolean("multiline", false)
+                    if (id.isNotEmpty() || label.isNotEmpty()) {
+                        list.add(
+                            PinEditableField(
+                                id = id.ifEmpty { "extra-$i" },
+                                label = label.ifEmpty { id },
+                                value = value,
+                                multiline = multiline
+                            )
+                        )
+                    }
+                }
+                if (list.isNotEmpty()) return list
+            }
+            return extractExtraFieldsFromRawJson(rawJson)
+        }
+
+        private fun extractExtraFieldsFromRawJson(jsonStr: String): List<PinEditableField> {
+            val arrayRegex = Regex("\"extraFields\"\\s*:\\s*\\[(.*?)\\]", RegexOption.DOT_MATCHES_ALL)
+            val body = arrayRegex.find(jsonStr)?.groupValues?.getOrNull(1) ?: return emptyList()
+            val objRegex = Regex("\\{([^{}]*)\\}", RegexOption.DOT_MATCHES_ALL)
+            val list = mutableListOf<PinEditableField>()
+            objRegex.findAll(body).forEachIndexed { idx, match ->
+                val objText = match.value
+                val id = extractJsonStringField(objText, "id").trim()
+                val label = extractJsonStringField(objText, "label").trim()
+                val value = extractJsonStringField(objText, "value")
+                val multiline = extractJsonBooleanField(objText, "multiline")
+                if (id.isNotEmpty() || label.isNotEmpty()) {
+                    list.add(
+                        PinEditableField(
+                            id = id.ifEmpty { "extra-$idx" },
+                            label = label.ifEmpty { id },
+                            value = value,
+                            multiline = multiline
+                        )
+                    )
+                }
+            }
+            return list
         }
 
         private fun safeOptJsonStringArray(json: JSONObject, rawJson: String, key: String): List<String> {
@@ -436,6 +596,32 @@ class MyMapJsBridge(
         val parsed = parseSelectedPinInfo(infoJson)
         mainHandler.post {
             onSelectedPinStateChangedCallback(parsed)
+        }
+    }
+
+    /**
+     * Phase 15：由 `inject_script.js` 的 `openNativePinEdit()` 呼叫，
+     * 回傳目前選取圖釘的可編輯標題、備註與自訂屬性欄位清單供原生 `EditPinDialog` 顯示。
+     */
+    @JavascriptInterface
+    fun onPinEditFormReady(formJson: String) {
+        Log.i(TAG, "onPinEditFormReady -> $formJson")
+        val parsed = parsePinEditFormState(formJson)
+        mainHandler.post {
+            onPinEditFormReadyCallback(parsed)
+        }
+    }
+
+    /**
+     * Phase 15：由 `inject_script.js` 的 `saveNativePinEdit()` / `deleteSelectedPin()` 呼叫，
+     * 回傳背景寫入儲存或刪除地點的成功/失敗狀態與提示訊息。
+     */
+    @JavascriptInterface
+    fun onPinEditResult(resultJson: String) {
+        Log.i(TAG, "onPinEditResult -> $resultJson")
+        val parsed = parsePinEditResult(resultJson)
+        mainHandler.post {
+            onPinEditResultCallback(parsed)
         }
     }
 }

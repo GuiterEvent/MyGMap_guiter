@@ -3,6 +3,7 @@ package com.guiterevent.mygmap.webview
 import android.content.Context
 import android.util.Log
 import android.webkit.WebView
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -455,6 +456,128 @@ object WebViewInjector {
             (function() {
                 if (window.MyGMapHelper && typeof window.MyGMapHelper.closeInfoWindow === 'function') {
                     return Boolean(window.MyGMapHelper.closeInfoWindow());
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { rawResult ->
+            onResult(rawResult == "true")
+        }
+    }
+
+    /**
+     * Phase 15：呼叫 `window.MyGMapHelper.openNativePinEdit()` 在背景鎖定隱藏氣泡窗並擷取可編輯欄位，
+     * 擷取完成後透過 `AndroidBridge.onPinEditFormReady(json)` 回傳給原生 `EditPinDialog`。
+     */
+    fun openNativePinEdit(
+        webView: WebView,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        val script = """
+            (function() {
+                if (window.MyGMapHelper && typeof window.MyGMapHelper.openNativePinEdit === 'function') {
+                    return Boolean(window.MyGMapHelper.openNativePinEdit());
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { rawResult ->
+            onResult(rawResult == "true")
+        }
+    }
+
+    /**
+     * Phase 15：呼叫 `window.MyGMapHelper.saveNativePinEdit(payloadJson)` 將原生對話框修改的標題、說明與自訂欄位
+     * 寫回背景氣泡窗並自動觸發儲存 (`#map-infowindow-done-editing-button`)。
+     */
+    fun saveNativePinEdit(
+        webView: WebView,
+        title: String,
+        description: String,
+        extraFields: List<PinEditableField> = emptyList(),
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        val extrasArray = JSONArray()
+        for (field in extraFields) {
+            val itemObj = JSONObject().apply {
+                put("id", field.id)
+                put("label", field.label)
+                put("value", field.value)
+                put("multiline", field.multiline)
+            }
+            extrasArray.put(itemObj)
+        }
+        val payloadJson = JSONObject().apply {
+            put("title", title)
+            put("description", description)
+            put("extraFields", extrasArray)
+        }.toString()
+        val quotedPayload = JSONObject.quote(payloadJson)
+
+        val script = """
+            (function() {
+                if (window.MyGMapHelper && typeof window.MyGMapHelper.saveNativePinEdit === 'function') {
+                    return Boolean(window.MyGMapHelper.saveNativePinEdit($quotedPayload));
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { rawResult ->
+            onResult(rawResult == "true")
+        }
+    }
+
+    /**
+     * Phase 15：呼叫 `window.MyGMapHelper.cancelNativePinEdit()` 取消編輯並退出背景氣泡窗編輯模式
+     */
+    fun cancelNativePinEdit(
+        webView: WebView,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        val script = """
+            (function() {
+                if (window.MyGMapHelper && typeof window.MyGMapHelper.cancelNativePinEdit === 'function') {
+                    return Boolean(window.MyGMapHelper.cancelNativePinEdit());
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { rawResult ->
+            onResult(rawResult == "true")
+        }
+    }
+
+    /**
+     * Phase 15：呼叫 `window.MyGMapHelper.deleteSelectedPin()` 刪除目前選取的圖釘
+     */
+    fun deleteSelectedPin(
+        webView: WebView,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        val script = """
+            (function() {
+                if (window.MyGMapHelper && typeof window.MyGMapHelper.deleteSelectedPin === 'function') {
+                    return Boolean(window.MyGMapHelper.deleteSelectedPin());
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { rawResult ->
+            onResult(rawResult == "true")
+        }
+    }
+
+    /**
+     * Phase 15 逃生門：呼叫 `window.MyGMapHelper.fallbackToWebPinEdit()` 切回原網頁氣泡窗編輯介面（相片/樣式）
+     */
+    fun fallbackToWebPinEdit(
+        webView: WebView,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        val script = """
+            (function() {
+                if (window.MyGMapHelper && typeof window.MyGMapHelper.fallbackToWebPinEdit === 'function') {
+                    return Boolean(window.MyGMapHelper.fallbackToWebPinEdit());
                 }
                 return false;
             })();
